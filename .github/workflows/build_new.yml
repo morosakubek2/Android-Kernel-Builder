@@ -2,23 +2,22 @@ name: "Build kernels"
 
 env:
   OUT_DIR: "${{ github.workspace }}/out"
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 on:
   workflow_dispatch:
 
-permissions:
-  contents: read
-
 jobs:
   Set-repos:
     name: "🐂 Parse repos.json"
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     outputs:
       repos: ${{ steps.generate-matrix.outputs.repos }}
       builddate: ${{ steps.generate-builddate.outputs.builddate }}
+
     steps:
       - name: "😄 Checkout"
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
 
       - name: "😆 Generate Matrix"
         id: generate-matrix
@@ -33,14 +32,18 @@ jobs:
 
   Build-Kernel:
     name: "🐎 Build kernel"
-    runs-on: ubuntu-22.04                  # ← KLUCZOWA ZMIANA
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
     needs:
       - Set-repos
+
     strategy:
       max-parallel: 4
       fail-fast: false
       matrix:
         repos: ${{ fromJSON(needs.Set-repos.outputs.repos) }}
+
     env:
       WORKSPACE: ${{ github.workspace }}
       builddate: "${{ needs.Set-repos.outputs.builddate }}"
@@ -49,6 +52,7 @@ jobs:
       KERNEL_REPO: ${{ matrix.repos.kernelSource.repo }}
       KERNEL_BRANCH: ${{ matrix.repos.kernelSource.branch }}
       KERNEL_DEVICE: ${{ matrix.repos.kernelSource.device }}
+
       DEFCONFIG_NAME: ${{ matrix.repos.kernelSource.defconfig }}
 
       withKernelSU: ${{ matrix.repos.withKernelSU }}
@@ -57,119 +61,156 @@ jobs:
       release: ${{ matrix.repos.AnyKernel3.release }}
 
     steps:
+      - name: "😄 Checkout"
+        uses: actions/checkout@v4
+
       - name: "⭐ Install prerequisites"
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential bc gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi libssl-dev libfl-dev
-          sudo apt-get install -y curl git wget libarchive-tools ccache python2 python2-dev
-          sudo apt-get install -y zip unzip tar gzip bzip2 rar unrar libtinfo5
+          sudo apt-get install -y curl git ftp lftp wget libarchive-tools ccache python2 python2-dev
+          sudo apt-get install -y zip unzip tar gzip bzip2 rar unrar
+          sudo apt-get install -y libtinfo5 jq
 
-      - name: "🚄 Create cache key from `repos`"
+      - name: "🚄 Create cache key"
         if: ${{ env.ccache == 'true' }}
         id: ccache_key
         run: |
           ccache -o compression=false -o cache_dir=$HOME/.ccache
           echo "CACHE_KEY=$(echo -n '${{ toJSON(matrix.repos) }}' | base64 -w 0 | cut -c -48)" >> $GITHUB_OUTPUT
 
-      - name: "🚅 Cache ccache files"
+      - name: "🚅 Cache ccache"
         if: ${{ env.ccache == 'true' }}
-        uses: actions/cache@v5
+        uses: actions/cache@v4
         with:
           path: |
             ~/.ccache
             ${{ env.OUT_DIR }}
           key: ccache-${{ env.KERNEL_NAME }}-${{ steps.ccache_key.outputs.CACHE_KEY }}-${{ env.builddate }}
           restore-keys: |
-            ccache-${{ env.KERNEL_NAME }}-${{ steps.ccache_key.outputs.CACHE_KEY }}-${{ env.builddate }}
+            ccache-${{ env.KERNEL_NAME }}-${{ steps.ccache_key.outputs.CACHE_KEY }}
 
-      - name: "⏰ Setup Anykernel3"
+      - name: "⏰ Setup AnyKernel3"
         env:
           params: "${{ toJSON(matrix.repos.AnyKernel3) }}"
         run: |
           ANYKERNEL_REPO=$(echo $params | jq -r ".repo")
           ANYKERNEL_BRANCH=$(echo $params | jq -r ".branch")
-          git clone --recursive --depth=1 -j $(nproc) --branch $ANYKERNEL_BRANCH $ANYKERNEL_REPO AnyKernel3
+          git clone --depth=1 --branch $ANYKERNEL_BRANCH $ANYKERNEL_REPO AnyKernel3
 
       - name: "🌟 Clone kernel source"
         run: |
-          git clone --recursive --depth=1 -j $(nproc) --branch $KERNEL_BRANCH $KERNEL_REPO $KERNEL_NAME
+          git clone --depth=1 --branch $KERNEL_BRANCH $KERNEL_REPO $KERNEL_NAME
 
       - name: "💫 Get toolchains"
+        env:
+          toolchains: "${{ toJSON(matrix.repos.toolchains) }}"
         run: |
-          echo '${{ toJSON(matrix.repos.toolchains) }}' > toolchains.json
-          toolchains_num=$(jq 'length' toolchains.json)
-          echo "🤔 There is $toolchains_num defined toolchains."
-          for ((i=0; i<toolchains_num; i++)); do
-            toolchain_name=$(jq -r ".[$i].name" toolchains.json)
-            toolchain_repo=$(jq -r ".[$i].repo // empty" toolchains.json)
-            toolchain_branch=$(jq -r ".[$i].branch // empty" toolchains.json)
-            toolchain_url=$(jq -r ".[$i].url // empty" toolchains.json)
-            
-            if [ -z "$toolchain_url" ] || [ "$toolchain_url" = "null" ]; then
-              git clone --recursive --depth=1 -j $(nproc) --branch "$toolchain_branch" "$toolchain_repo" "$toolchain_name"
+          toolchains_num="$(echo $toolchains | jq 'length')"
+          for ((i=0;i<toolchains_num;i++)); do
+            name=$(echo $toolchains | jq -r ".[$i].name")
+            repo=$(echo $toolchains | jq -r ".[$i].repo")
+            branch=$(echo $toolchains | jq -r ".[$i].branch")
+            url=$(echo $toolchains | jq -r ".[$i].url")
+
+            if [ -z "${url:-}" ] || [ "$url" = "null" ]; then
+              git clone --depth=1 --branch $branch $repo $name
             else
-              wget -q "$toolchain_url"
-              filename="${toolchain_url##*/}"
-              mkdir -p "$toolchain_name"
-              case "$filename" in
-                *.zip) unzip -q -d "$toolchain_name" "$filename" ;;
-                *.tar|*.tar.gz) tar zxf "$filename" -C "$toolchain_name" ;;
-                *.rar) unrar x -o+ "$filename" "$toolchain_name" ;;
-                *) echo "Unknown file type: $filename" ;;
-              esac
-              rm -f "$filename"
+              wget "$url"
+              file="${url##*/}"
+              mkdir -p $name
+              tar -xf "$file" -C $name || true
             fi
 
-            jq -r ".[$i].binPath[] | \"${WORKSPACE}/$toolchain_name/\" + ." toolchains.json | while read -r bin_path; do
-              echo "$bin_path" >> $GITHUB_PATH
+            jq -r ".[$i].binPath[]" <<< "$toolchains" | while read p; do
+              echo "$WORKSPACE/$name/$p" >> $GITHUB_PATH
             done
           done
 
       - name: "😎 Set args"
-        id: generate-args
+        id: args
         env:
           params: "${{ toJSON(matrix.repos.params) }}"
-          THREAD: $(nproc --all)
         run: |
           ARCH=$(echo $params | jq -r ".ARCH")
           CC=$(echo $params | jq -r ".CC")
-          args="-j${{ env.THREAD }}"
-          if [ -n "${{ env.OUT_DIR }}" ]; then
-            mkdir -p ${{ env.OUT_DIR }} && args="$args O=${{ env.OUT_DIR }}"
+
+          args="-j$(nproc)"
+
+          mkdir -p $OUT_DIR
+          args="$args O=$OUT_DIR ARCH=$ARCH"
+
+          if [ "$ccache" = "true" ]; then
+            args="$args CC=\"ccache $CC\""
+          else
+            args="$args CC=$CC"
           fi
-          if [ -n "$ARCH" ]; then args="$args ARCH=$ARCH"; fi
-          if [ -n "$CC" ]; then
-            if [[ "$CC" == *"/"* ]]; then CC=${{ env.WORKSPACE }}/$CC; fi
-            if [ ${{ env.ccache }} = true ]; then
-              args="$args CC=\"ccache $CC\""
-            else
-              args="$args CC=$CC"
-            fi
-          fi
-          while read -r externalCommand; do
-            key=$(echo "$externalCommand" | cut -d= -f1)
-            value=$(echo "$externalCommand" | cut -d= -f2)
-            if [[ "$value" == *"/"* ]]; then value="${{ env.WORKSPACE }}/$value"; fi
-            args="$args $key=$value"
+
+          while read line; do
+            args="$args $line"
           done < <(jq -r '.externalCommand | to_entries[] | "\(.key)=\(.value)"' <<< "$params")
-          
-          echo "ARCH=$ARCH" >> $GITHUB_OUTPUT
+
           echo "args=$args" >> $GITHUB_OUTPUT
+          echo "ARCH=$ARCH" >> $GITHUB_OUTPUT
 
       - name: "👍 Make defconfig"
         working-directory: ${{ env.KERNEL_NAME }}
-        env:
-          args: ${{ steps.generate-args.outputs.args }}
         run: |
-          make ${{ env.args }} ${{ env.DEFCONFIG_NAME }}
-          echo "CONFIG_DEBUG_INFO_BTF=n" >> .config
+          make ${{ steps.args.outputs.args }} ${{ env.DEFCONFIG_NAME }}
 
       - name: "🎶 Build kernel"
         working-directory: ${{ env.KERNEL_NAME }}
-        env:
-          args: ${{ steps.generate-args.outputs.args }}
         run: |
-          make ${{ env.args }} WERROR=0
+          make ${{ steps.args.outputs.args }}
 
-      # Tutaj wklej resztę swoich uploadów (Image, Image.gz, dtb, dtbo, Pack AnyKernel3, Release) ze starego pliku
-      # (mogę je dodać, jeśli chcesz pełny plik)
+      # ===== ARTIFACTS (FIXED) =====
+
+      - name: "💛 Upload Image"
+        uses: actions/upload-artifact@v4
+        with:
+          name: Image-${{ env.KERNEL_DEVICE }}-${{ env.KERNEL_NAME }}-${{ env.builddate }}
+          path: ${{ env.OUT_DIR }}/arch/${{ steps.args.outputs.ARCH }}/boot/Image
+          if-no-files-found: ignore
+
+      - name: "💙 Upload Image.gz"
+        uses: actions/upload-artifact@v4
+        with:
+          name: Image.gz-${{ env.KERNEL_DEVICE }}-${{ env.KERNEL_NAME }}-${{ env.builddate }}
+          path: ${{ env.OUT_DIR }}/arch/${{ steps.args.outputs.ARCH }}/boot/Image.gz
+          if-no-files-found: ignore
+
+      - name: "💜 Upload dtb"
+        uses: actions/upload-artifact@v4
+        with:
+          name: dtb-${{ env.KERNEL_DEVICE }}-${{ env.KERNEL_NAME }}-${{ env.builddate }}
+          path: ${{ env.OUT_DIR }}/arch/${{ steps.args.outputs.ARCH }}/boot/dtb
+          if-no-files-found: ignore
+
+      - name: "❤️ Upload dtbo.img"
+        uses: actions/upload-artifact@v4
+        with:
+          name: dtbo.img-${{ env.KERNEL_DEVICE }}-${{ env.KERNEL_NAME }}-${{ env.builddate }}
+          path: ${{ env.OUT_DIR }}/arch/${{ steps.args.outputs.ARCH }}/boot/dtbo.img
+          if-no-files-found: ignore
+
+      - name: "❤️ Pack AnyKernel3"
+        if: ${{ env.useAnykernel == 'true' }}
+        run: |
+          cp -f $OUT_DIR/arch/${{ steps.args.outputs.ARCH }}/boot/* AnyKernel3/ 2>/dev/null || true
+          cd AnyKernel3
+          zip -r "../${{ env.KERNEL_DEVICE }}-${{ env.KERNEL_NAME }}_${{ env.builddate }}.zip" *
+
+      - name: "💾 Upload AnyKernel3"
+        uses: actions/upload-artifact@v4
+        if: ${{ env.useAnykernel == 'true' }}
+        with:
+          name: "${{ env.KERNEL_DEVICE }}-${{ env.KERNEL_NAME }}_${{ env.builddate }}"
+          path: "*.zip"
+
+      - name: "🧧 Release"
+        uses: softprops/action-gh-release@v2
+        if: ${{ env.useAnykernel == 'true' && env.release == 'true' }}
+        with:
+          tag_name: v${{ env.builddate }}.${{ github.run_number }}
+          files: "*.zip"
+          generate_release_notes: true
