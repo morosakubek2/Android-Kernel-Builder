@@ -62,6 +62,11 @@ jobs:
       - name: "⭐ Install prerequisites"
         run: |
           sudo apt-get update -qq
+          
+          # Włączamy universe (potrzebne dla dwarves/pahole)
+          sudo add-apt-repository universe -y
+          sudo apt-get update -qq
+
           sudo apt-get install -y \
             build-essential \
             bc \
@@ -84,27 +89,28 @@ jobs:
             bzip2 \
             rar \
             unrar \
-            pahole \                  # ← KLUCZOWE dla BTF / Error 2
-            dwarves \                 # zawiera pahole
+            dwarves \                    # zawiera pahole - kluczowe dla BTF
             libncurses-dev
 
-          # libtinfo5 + ncurses compatibility (dla starych Samsung kernel SM8350)
+          # Instalacja libtinfo5 + libncurses5 (kompatybilność dla starych kernel SM8350)
           echo "=== Installing libtinfo5 + libncurses5 ==="
-          wget -q https://security.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2ubuntu0.1_amd64.deb
-          wget -q https://security.ubuntu.com/ubuntu/pool/universe/n/ncurses/libncurses5_6.3-2ubuntu0.1_amd64.deb
-          sudo apt install -y ./*.deb
-          rm -f *.deb
+          wget -q https://security.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2ubuntu0.1_amd64.deb -O libtinfo5.deb
+          wget -q https://security.ubuntu.com/ubuntu/pool/universe/n/ncurses/libncurses5_6.3-2ubuntu0.1_amd64.deb -O libncurses5.deb
+          sudo apt install -y ./libtinfo5.deb ./libncurses5.deb
+          rm -f libtinfo5.deb libncurses5.deb
 
+          # Symlinki (bardzo ważne przy clang/ld w kernelach Samsung)
           sudo ln -sf /usr/lib/x86_64-linux-gnu/libncurses.so.6 /usr/lib/x86_64-linux-gnu/libtinfo.so.5
           sudo ln -sf /usr/lib/x86_64-linux-gnu/libncurses.so.6 /usr/lib/x86_64-linux-gnu/libtinfo5.so.6
+          sudo ln -sf /usr/lib/x86_64-linux-gnu/libncurses.so.6 /usr/lib/x86_64-linux-gnu/libncurses.so.5
 
           # Python alias
           sudo update-alternatives --install /usr/bin/python python /usr/bin/python3 10
 
-          echo "=== Debug info ==="
+          echo "=== Debug information ==="
           python --version
-          pahole --version || echo "pahole not found"
-          ls -l /usr/lib/x86_64-linux-gnu/libtinfo*
+          pahole --version || echo "pahole not installed"
+          ls -l /usr/lib/x86_64-linux-gnu/libtinfo* /usr/lib/x86_64-linux-gnu/libncurses*
 
       - name: "🚄 Create cache key from `repos`"
         if: ${{ env.ccache == 'true' }}
@@ -236,6 +242,7 @@ jobs:
           echo "PATH Variable: $PATH"
           make ${{ env.args }}
 
+      # Upload artifacts (bez zmian)
       - name: "💛 Upload Image"
         uses: actions/upload-artifact@v4
         with:
