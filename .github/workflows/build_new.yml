@@ -34,7 +34,6 @@ jobs:
     name: "🐎 Build kernel"
     runs-on: ubuntu-22.04
     timeout-minutes: 120
-
     needs: Set-repos
 
     strategy:
@@ -148,7 +147,7 @@ jobs:
           args="-j$(nproc)"
           args="$args O=$OUT_DIR ARCH=$ARCH"
 
-          # 🔥 FIX CC (bez psucia make)
+          # FIX CC (bez rozwalania make)
           if [ "$ccache" = "true" ]; then
             args="$args CC=ccache\ $CC"
           else
@@ -167,12 +166,25 @@ jobs:
         run: |
           make ${{ steps.args.outputs.args }} ${{ env.DEFCONFIG_NAME }}
 
-      - name: "Build kernel"
+      # 🔥 KLUCZOWY DEBUG
+      - name: "Build kernel (DEBUG)"
         working-directory: ${{ env.KERNEL_NAME }}
         run: |
-          make ${{ steps.args.outputs.args }}
+          set -o pipefail
+          make ${{ steps.args.outputs.args }} 2>&1 | tee build.log
 
-      # ===== ARTIFACTS =====
+      - name: "Show last log lines"
+        if: failure()
+        run: |
+          echo "==== LAST 200 LINES ===="
+          tail -n 200 ${{ env.KERNEL_NAME }}/build.log || true
+
+      - name: "Upload build log"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: ${{ env.KERNEL_NAME }}/build.log
 
       - name: "Upload Image"
         uses: actions/upload-artifact@v4
@@ -180,10 +192,3 @@ jobs:
           name: Image-${{ env.KERNEL_DEVICE }}-${{ env.builddate }}
           path: ${{ env.OUT_DIR }}/arch/${{ steps.args.outputs.ARCH }}/boot/Image
           if-no-files-found: ignore
-
-      - name: "Upload AnyKernel3"
-        if: ${{ env.useAnykernel == 'true' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: AnyKernel3-${{ env.builddate }}
-          path: "*.zip"
