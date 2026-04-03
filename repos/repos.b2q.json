@@ -1,7 +1,7 @@
 [  {
     "kernelSource": {
       "name": "android_kernel_samsung_sm8350",
-      "repo": "https://github.com/AlexFurina/android_kernel_samsung_sm8350",
+      "repo": "https://github.com/morosakubek2/flip_3_android_kernel_samsung_sm8350",
       "branch": "Flip3-Android16",
       "device": "b2q",
       "defconfig": "gki_defconfig"
