@@ -83,25 +83,28 @@ jobs:
             gzip \
             bzip2 \
             rar \
-            unrar
+            unrar \
+            pahole \                  # ← KLUCZOWE dla BTF / Error 2
+            dwarves \                 # zawiera pahole
+            libncurses-dev
 
-          # Instalacja libtinfo5 + libncurses5 (najpewniejszy fix na Ubuntu 24.04)
-          echo "=== Instalacja libtinfo5 + libncurses5 ==="
+          # libtinfo5 + ncurses compatibility (dla starych Samsung kernel SM8350)
+          echo "=== Installing libtinfo5 + libncurses5 ==="
           wget -q https://security.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2ubuntu0.1_amd64.deb
           wget -q https://security.ubuntu.com/ubuntu/pool/universe/n/ncurses/libncurses5_6.3-2ubuntu0.1_amd64.deb
           sudo apt install -y ./*.deb
           rm -f *.deb
 
-          # Symlinki – krytyczne dla starych clang/ld w kernelach Samsung SM8350
           sudo ln -sf /usr/lib/x86_64-linux-gnu/libncurses.so.6 /usr/lib/x86_64-linux-gnu/libtinfo.so.5
           sudo ln -sf /usr/lib/x86_64-linux-gnu/libncurses.so.6 /usr/lib/x86_64-linux-gnu/libtinfo5.so.6
-          sudo ln -sf /usr/lib/x86_64-linux-gnu/libncurses.so.6 /usr/lib/x86_64-linux-gnu/libncurses.so.5
 
           # Python alias
           sudo update-alternatives --install /usr/bin/python python /usr/bin/python3 10
-          echo "=== Python & libtinfo check ==="
+
+          echo "=== Debug info ==="
           python --version
-          ls -l /usr/lib/x86_64-linux-gnu/libtinfo* /usr/lib/x86_64-linux-gnu/libncurses*
+          pahole --version || echo "pahole not found"
+          ls -l /usr/lib/x86_64-linux-gnu/libtinfo*
 
       - name: "🚄 Create cache key from `repos`"
         if: ${{ env.ccache == 'true' }}
@@ -112,7 +115,7 @@ jobs:
 
       - name: "🚅 Cache ccache files"
         if: ${{ env.ccache == 'true' }}
-        uses: actions/cache@v5        # <-- najnowsza wersja (Node 24)
+        uses: actions/cache@v5
         with:
           path: |
             ~/.ccache
@@ -233,7 +236,6 @@ jobs:
           echo "PATH Variable: $PATH"
           make ${{ env.args }}
 
-      # Uploady artefaktów (bez zmian)
       - name: "💛 Upload Image"
         uses: actions/upload-artifact@v4
         with:
