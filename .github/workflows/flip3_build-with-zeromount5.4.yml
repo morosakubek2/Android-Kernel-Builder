@@ -1,102 +1,221 @@
-name: Build Flip3 Kernel + ZeroMount 5.4 (AlexFurina source)
+name: "Build Flip3 Kernel + ZeroMount 5.4 (AlexFurina)"
+
+env:
+  OUT_DIR: "${{ github.workspace }}/out"
 
 on:
   workflow_dispatch:
-    inputs:
-      repository:
-        description: 'Kernel repository'
-        required: false
-        default: 'AlexFurina/android_kernel_samsung_sm8350'
-      ref:
-        description: 'Branch'
-        required: false
-        default: 'Flip3-Android16'
 
 jobs:
-  build:
-    name: SM8350 Flip3 + ZeroMount
-    runs-on: ubuntu-22.04
-    timeout-minutes: 120
+  Set-repos:
+    name: "🐂 Parse repos.json"
+    runs-on: ubuntu-latest
+    outputs:
+      repos: ${{ steps.generate-matrix.outputs.repos }}
+      builddate: ${{ steps.generate-builddate.outputs.builddate }}
+    steps:
+      - name: "😄 Checkout"
+        uses: actions/checkout@v3
+
+      - name: "😆 Generate Matrix"
+        id: generate-matrix
+        run: |
+          echo "repos<<EOF" >> $GITHUB_OUTPUT
+          jq -s '[.[][]]' repos/repos*.json >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: "⏰ Set builddate"
+        id: generate-builddate
+        run: echo "builddate=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
+
+  Build-Kernel:
+    name: "🐎 Build kernel + ZeroMount"
+    runs-on: ubuntu-latest
+    needs:
+      - Set-repos
+    strategy:
+      max-parallel: 2
+      fail-fast: false
+      matrix:
+        repos: ${{ fromJSON(needs.Set-repos.outputs.repos) }}
+
+    env:
+      WORKSPACE: ${{ github.workspace }}
+      builddate: "${{ needs.Set-repos.outputs.builddate }}"
+      KERNEL_NAME: ${{ matrix.repos.kernelSource.name }}
+      KERNEL_REPO: ${{ matrix.repos.kernelSource.repo }}
+      KERNEL_BRANCH: ${{ matrix.repos.kernelSource.branch }}
+      KERNEL_DEVICE: ${{ matrix.repos.kernelSource.device }}
+      DEFCONFIG_NAME: ${{ matrix.repos.kernelSource.defconfig }}
+      withKernelSU: false                     # WYŁĄCZONE - bez KernelSU
+      ccache: ${{ matrix.repos.ccache }}
+      useAnykernel: ${{ matrix.repos.AnyKernel3.use }}
+      release: ${{ matrix.repos.AnyKernel3.release }}
 
     steps:
-      - name: Checkout kernel source (AlexFurina)
-        uses: actions/checkout@v4
+      - name: "⭐ Install prerequisites"
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev \
+            clang lld llvm make git curl wget jq libncurses5 libtinfo5 ccache \
+            zip unzip tar gzip python2 python2-dev
+
+      - name: "🚄 Create cache key from `repos`"
+        if: ${{ env.ccache == 'true' }}
+        id: ccache_key
+        run: |
+          ccache -o compression=false -o cache_dir=$HOME/.ccache
+          echo "CACHE_KEY=$(echo -n '${{ toJSON(matrix.repos) }}' | base64 -w 0 | cut -c -48)" >> $GITHUB_OUTPUT
+
+      - name: "🚅 Cache ccache files"
+        if: ${{ env.ccache == 'true' }}
+        uses: actions/cache@v3
         with:
-          repository: ${{ github.event.inputs.repository || 'AlexFurina/android_kernel_samsung_sm8350' }}
-          ref: ${{ github.event.inputs.ref || 'Flip3-Android16' }}
+          path: |
+            ~/.ccache
+            ${{ env.OUT_DIR }}
+          key: ccache-${{ env.KERNEL_NAME }}-${{ steps.ccache_key.outputs.CACHE_KEY }}-${{ env.builddate }}
+          restore-keys: |
+            ccache-${{ env.KERNEL_NAME }}-${{ steps.ccache_key.outputs.CACHE_KEY }}-${{ env.builddate }}
 
-      - name: Install build dependencies
+      - name: "⏰ Setup Anykernel3"
+        env:
+          params: "${{ toJSON(matrix.repos.AnyKernel3) }}"
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            bc bison flex libssl-dev libelf-dev \
-            clang lld llvm make git python3 \
-            libncurses5 libtinfo5 ccache
+          ANYKERNEL_REPO=$(echo $params | jq -r ".repo")
+          ANYKERNEL_BRANCH=$(echo $params | jq -r ".branch")
+          git clone --recursive --depth=1 -j $(nproc) --branch $ANYKERNEL_BRANCH $ANYKERNEL_REPO AnyKernel3
 
-      - name: Setup Clang toolchain
+      - name: "🌟 Clone kernel source (AlexFurina)"
         run: |
-          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/clang-r510928 clang-r510928
-          echo "$PWD/clang-r510928/bin" >> $GITHUB_PATH
+          git clone --recursive --depth=1 -j $(nproc) --branch Flip3-Android16 \
+            https://github.com/AlexFurina/android_kernel_samsung_sm8350.git $KERNEL_NAME
 
-      - name: Download ZeroMount patch + apply with auto-fix
+      - name: "💫 Get toolchains"
+        env:
+          toolchains: "${{ toJSON(matrix.repos.toolchains) }}"
         run: |
-          echo "=== Pobieranie patcha ZeroMount 5.4 ==="
-          wget -q https://raw.githubusercontent.com/Enginex0/Super-Builders/main/android12-5.4/SukiSU-Ultra/patches/60_zeromount-android12-5.4.patch -O 60_zeromount.patch
+          toolchains_num="$(echo $toolchains | jq 'length')"
+          echo "There is $toolchains_num defined toolchains."
+          for ((i=0;i<toolchains_num;i++)); do
+            toolchain_name=$(echo $toolchains | jq -r ".[$i].name")
+            toolchain_repo=$(echo $toolchains | jq -r ".[$i].repo")
+            toolchain_branch=$(echo $toolchains | jq -r ".[$i].branch")
+            toolchain_url=$(echo $toolchains | jq -r ".[$i].url")
+            
+            if [ -z "${toolchain_url:-}" ] || [ "$toolchain_url" = "null" ]; then
+              git clone --recursive --depth=1 -j $(nproc) --branch $toolchain_branch $toolchain_repo $toolchain_name
+            else
+              wget "$toolchain_url"
+              filename="${toolchain_url##*/}"
+              mkdir -p $toolchain_name
+              case "$filename" in
+                *.zip) unzip -d $toolchain_name "$filename" ;;
+                *.tar) tar xvf "$filename" -C $toolchain_name ;;
+                *.tar.gz) tar zxvf "$filename" -C $toolchain_name ;;
+                *.rar) unrar x "$filename" $toolchain_name ;;
+                *) echo "unknown file type: $filename" ;;
+              esac
+            fi
 
-          echo "=== Stosowanie patcha ==="
-          git apply --reject --ignore-whitespace 60_zeromount.patch || true
+            jq -r ".[$i].binPath[] | tostring" <<< "$toolchains" | while read -r bin_path; do
+              echo "$WORKSPACE/$toolchain_name/$bin_path" >> $GITHUB_PATH
+            done
+          done
 
-          echo "=== Automatyczna naprawa konfliktów ==="
+      - name: "🔧 Apply ZeroMount 5.4 + auto fix conflicts"
+        working-directory: ${{ env.KERNEL_NAME }}
+        run: |
+          echo "=== Downloading ZeroMount 5.4 patch ==="
+          wget -q https://raw.githubusercontent.com/Enginex0/Super-Builders/main/android12-5.4/SukiSU-Ultra/patches/60_zeromount-android12-5.4.patch -O ../zeromount.patch
 
-          # Naprawa Kconfig
+          echo "=== Applying patch ==="
+          git apply --reject --ignore-whitespace ../zeromount.patch || true
+
+          echo "=== Auto fixing known conflicts ==="
+          # fs/Kconfig
           cat >> fs/Kconfig << 'EOF'
 
           config ZEROMOUNT
               bool "ZeroMount Path Redirection Subsystem"
               default y
               help
-                ZeroMount for path redirection and virtual file injection.
+                ZeroMount allows path redirection and virtual file injection without mounting filesystems.
           EOF
 
-          # Naprawa Makefile
+          # fs/Makefile
           sed -i '/obj-$(CONFIG_EROFS_FS)[[:space:]]\+= erofs\//a obj-$(CONFIG_ZEROMOUNT)		+= zeromount.o' fs/Makefile || true
 
-          # Naprawa include w proc/base.c
+          # proc/base.c
           sed -i '/#include "internal.h"/a #ifdef CONFIG_ZEROMOUNT\n#include <linux/zeromount.h>\n#endif' fs/proc/base.c || true
 
-          # Naprawa include w proc/task_mmu.c
+          # proc/task_mmu.c
           sed -i '/#include <linux/pkeys.h>/a #ifdef CONFIG_ZEROMOUNT\n#include <linux/zeromount.h>\n#endif' fs/proc/task_mmu.c || true
 
-          # Włączenie opcji w defconfig
-          echo "CONFIG_ZEROMOUNT=y" >> arch/arm64/configs/msm_lahaina_defconfig
+          # Enable CONFIG
+          echo "CONFIG_ZEROMOUNT=y" >> arch/arm64/configs/msm_lahaina_defconfig || true
 
-          echo "=== Naprawy zakończone ==="
+          echo "=== ZeroMount applied and fixed ==="
 
-      - name: Build kernel
+      - name: "😎 Set args"
+        id: generate-args
+        env:
+          params: "${{ toJSON(matrix.repos.params) }}"
+          THREAD: $(nproc --all)
         run: |
-          export PATH=$PWD/clang-r510928/bin:$PATH
-          export ARCH=arm64
-          export SUBARCH=arm64
+          ARCH=$(echo $params | jq -r ".ARCH")
+          CC=$(echo $params | jq -r ".CC")
+          args="-j${{ env.THREAD }}"
+          if [ -n "${{ env.OUT_DIR }}" ]; then
+            mkdir -p ${{ env.OUT_DIR }} && args="$args O=${{ env.OUT_DIR }}"
+          fi
+          if [ -n "$ARCH" ]; then args="$args ARCH=$ARCH"; fi
+          if [ -n "$CC" ]; then
+            if [[ "$CC" == *"/"* ]]; then CC=${{ env.WORKSPACE }}/$CC; fi
+            if [ ${{ env.ccache }} = true ]; then
+              args="$args CC=\"ccache $CC\""
+            else
+              args="$args CC=$CC"
+            fi
+          fi
+          while read -r externalCommand; do
+            key=$(echo "$externalCommand" | cut -d= -f1)
+            value=$(echo "$externalCommand" | cut -d= -f2)
+            if [[ "$value" == *"/"* ]]; then value="${{ env.WORKSPACE }}/$value"; fi
+            args="$args $key=$value"
+          done < <(jq -r '.externalCommand | to_entries[] | "\(.key)=\(.value)"' <<< "$params")
+          
+          echo "args = $args"
+          echo "ARCH=$ARCH" >> $GITHUB_OUTPUT
+          echo "args=$args" >> $GITHUB_OUTPUT
 
-          chmod +x build_kernel.sh
+      - name: "👍 Make defconfig"
+        working-directory: ${{ env.KERNEL_NAME }}
+        env:
+          args: ${{ steps.generate-args.outputs.args }}
+        run: |
+          make ${{ env.args }} ${{ env.DEFCONFIG_NAME }}
 
-          echo "=== Uruchamianie build_kernel.sh ==="
-          ./build_kernel.sh
+      - name: "🎶 Build kernel"
+        working-directory: ${{ env.KERNEL_NAME }}
+        env:
+          args: ${{ steps.generate-args.outputs.args }}
+        run: |
+          make ${{ env.args }}
 
-      - name: Upload Kernel Artifacts
-        uses: actions/upload-artifact@v4
+      # Uploady (skrócone, ale zachowane najważniejsze)
+      - name: "Upload Image.gz + dtbo"
+        uses: actions/upload-artifact@v3
         with:
-          name: Flip3-Android16-Kernel-ZeroMount-AlexFurina
+          name: Flip3-ZeroMount-${{ env.builddate }}
           path: |
-            arch/arm64/boot/Image*
-            out/arch/arm64/boot/Image*
-            out/arch/arm64/boot/dtbo.img
-            out/arch/arm64/boot/dtb*
-            *.zip
+            ${{ env.OUT_DIR }}/arch/arm64/boot/Image*
+            ${{ env.OUT_DIR }}/arch/arm64/boot/dtbo.img
           if-no-files-found: warn
 
-      - name: Build Summary
+      - name: "Pack AnyKernel3"
+        if: ${{ env.useAnykernel == 'true' }}
         run: |
-          echo "=== BUILD SUMMARY ==="
-          ls -lh arch/arm64/boot/ 2>/dev/null || true
-          ls -lh out/arch/arm64/boot/ 2>/dev/null || true
+          cp -f ${{ env.OUT_DIR }}/arch/arm64/boot/Image* AnyKernel3/ 2>/dev/null || true
+          cp -f ${{ env.OUT_DIR }}/arch/arm64/boot/dtbo.img AnyKernel3/ 2>/dev/null || true
+          cd AnyKernel3 && zip -q -r "../Flip3-ZeroMount_${{ env.builddate }}.zip" *
