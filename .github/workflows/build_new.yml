@@ -2,14 +2,13 @@ name: "Build kernels"
 
 env:
   OUT_DIR: "${{ github.workspace }}/out"
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # Usuwa ostrzeżenie o Node.js 20
 
 on:
   workflow_dispatch:
 
 permissions:
-  contents: read          # domyślnie wystarczające
-  # jeśli chcesz automatycznie tworzyć release, odkomentuj poniższe:
-  # contents: write
+  contents: read
 
 jobs:
   Set-repos:
@@ -20,7 +19,7 @@ jobs:
       builddate: ${{ steps.generate-builddate.outputs.builddate }}
     steps:
       - name: "😄 Checkout"
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: "😆 Generate Matrix"
         id: generate-matrix
@@ -138,12 +137,48 @@ jobs:
           params: "${{ toJSON(matrix.repos.params) }}"
           THREAD: $(nproc --all)
         run: |
-          # ... (cała sekcja bez zmian)
+          ARCH=$(echo $params | jq -r ".ARCH")
+          CC=$(echo $params | jq -r ".CC")
+
+          args="-j${{ env.THREAD }}"
+          if [ -n "${{ env.OUT_DIR }}" ]; then
+            mkdir -p ${{ env.OUT_DIR }} && args="$args O=${{ env.OUT_DIR }}"
+          fi
+          if [ -n "$ARCH" ]; then
+            args="$args ARCH=$ARCH"
+          fi
+          if [ -n "$CC" ]; then
+            if [[ "$CC" == *"/"* ]]; then
+              CC=${{ env.WORKSPACE }}/$CC
+            fi
+            if [ ${{ env.ccache }} = true ]; then
+              args="$args CC=\"ccache $CC\""
+            else
+              args="$args CC=$CC"
+            fi
+          fi
+          while read -r externalCommand; do
+            key=$(echo "$externalCommand" | cut -d= -f1)
+            value=$(echo "$externalCommand" | cut -d= -f2)
+            if [[ "$value" == *"/"* ]]; then
+              value="${{ env.WORKSPACE }}/$value"
+            fi
+            args="$args $key=$value"
+          done < <(jq -r '.externalCommand | to_entries[] | "\(.key)=\(.value)"' <<< "$params")
+        
           echo "🤔 $args"
           echo "ARCH=$ARCH" >> $GITHUB_OUTPUT
           echo "args=$args" >> $GITHUB_OUTPUT
 
-      # reszta kroków (Update KernelSU, Make defconfig, Build kernel) bez zmian...
+      - name: "😋 Update KernelSU"
+        working-directory: ${{ env.KERNEL_NAME }}
+        env:
+          arch: ${{ steps.generate-args.outputs.ARCH }}
+        if: ${{ env.withKernelSU == 'true' }}
+        run: |
+          if [ -d "./KernelSU" ]; then rm -rf "./KernelSU"; fi
+          if [ -d "./drivers/kernelsu" ]; then rm -rf "./drivers/kernelsu"; fi
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
 
       - name: "👍 Make defconfig"
         working-directory: ${{ env.KERNEL_NAME }}
@@ -162,7 +197,7 @@ jobs:
           echo "PATH Variable: $PATH"
           make ${{ env.args }}
 
-      # === Upload artifacts - ZMIENIONE NA v4 ===
+      # === Uploads z v4 ===
       - name: "💛 Upload Image"
         uses: actions/upload-artifact@v4
         with:
