@@ -2,7 +2,7 @@ name: "Build kernels"
 
 env:
   OUT_DIR: "${{ github.workspace }}/out"
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # Usuwa ostrzeżenie o Node.js 20
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 on:
   workflow_dispatch:
@@ -61,11 +61,36 @@ jobs:
     steps:
       - name: "⭐ Install prerequisites"
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential bc gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi libssl-dev libfl-dev
-          sudo apt-get install -y curl git ftp lftp wget libarchive-tools ccache python2 python2-dev
-          sudo apt-get install -y zip unzip tar gzip bzip2 rar unrar
-          sudo apt-get install -y libtinfo5
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            build-essential \
+            bc \
+            gcc-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabi \
+            libssl-dev \
+            libfl-dev \
+            curl \
+            git \
+            wget \
+            libarchive-tools \
+            ccache \
+            python3 \
+            python3-dev \
+            python-is-python3 \
+            zip \
+            unzip \
+            tar \
+            gzip \
+            bzip2 \
+            rar \
+            unrar \
+            libtinfo5
+          
+          # Ustawiamy python jako alias do python3 (ważne dla starych skryptów kernela)
+          sudo update-alternatives --install /usr/bin/python python /usr/bin/python3 10
+          echo "Python version:"
+          python --version
+          python3 --version
 
       - name: "🚄 Create cache key from `repos`"
         if: ${{ env.ccache == 'true' }}
@@ -197,7 +222,6 @@ jobs:
           echo "PATH Variable: $PATH"
           make ${{ env.args }}
 
-      # === Uploads z v4 ===
       - name: "💛 Upload Image"
         uses: actions/upload-artifact@v4
         with:
