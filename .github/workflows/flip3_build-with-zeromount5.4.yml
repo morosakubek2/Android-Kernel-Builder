@@ -1,0 +1,102 @@
+name: Build Flip3 Kernel + ZeroMount 5.4 (AlexFurina source)
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: 'Kernel repository'
+        required: false
+        default: 'AlexFurina/android_kernel_samsung_sm8350'
+      ref:
+        description: 'Branch'
+        required: false
+        default: 'Flip3-Android16'
+
+jobs:
+  build:
+    name: SM8350 Flip3 + ZeroMount
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout kernel source (AlexFurina)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.inputs.repository || 'AlexFurina/android_kernel_samsung_sm8350' }}
+          ref: ${{ github.event.inputs.ref || 'Flip3-Android16' }}
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            bc bison flex libssl-dev libelf-dev \
+            clang lld llvm make git python3 \
+            libncurses5 libtinfo5 ccache
+
+      - name: Setup Clang toolchain
+        run: |
+          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/clang-r510928 clang-r510928
+          echo "$PWD/clang-r510928/bin" >> $GITHUB_PATH
+
+      - name: Download ZeroMount patch + apply with auto-fix
+        run: |
+          echo "=== Pobieranie patcha ZeroMount 5.4 ==="
+          wget -q https://raw.githubusercontent.com/Enginex0/Super-Builders/main/android12-5.4/SukiSU-Ultra/patches/60_zeromount-android12-5.4.patch -O 60_zeromount.patch
+
+          echo "=== Stosowanie patcha ==="
+          git apply --reject --ignore-whitespace 60_zeromount.patch || true
+
+          echo "=== Automatyczna naprawa konfliktów ==="
+
+          # Naprawa Kconfig
+          cat >> fs/Kconfig << 'EOF'
+
+          config ZEROMOUNT
+              bool "ZeroMount Path Redirection Subsystem"
+              default y
+              help
+                ZeroMount for path redirection and virtual file injection.
+          EOF
+
+          # Naprawa Makefile
+          sed -i '/obj-$(CONFIG_EROFS_FS)[[:space:]]\+= erofs\//a obj-$(CONFIG_ZEROMOUNT)		+= zeromount.o' fs/Makefile || true
+
+          # Naprawa include w proc/base.c
+          sed -i '/#include "internal.h"/a #ifdef CONFIG_ZEROMOUNT\n#include <linux/zeromount.h>\n#endif' fs/proc/base.c || true
+
+          # Naprawa include w proc/task_mmu.c
+          sed -i '/#include <linux/pkeys.h>/a #ifdef CONFIG_ZEROMOUNT\n#include <linux/zeromount.h>\n#endif' fs/proc/task_mmu.c || true
+
+          # Włączenie opcji w defconfig
+          echo "CONFIG_ZEROMOUNT=y" >> arch/arm64/configs/msm_lahaina_defconfig
+
+          echo "=== Naprawy zakończone ==="
+
+      - name: Build kernel
+        run: |
+          export PATH=$PWD/clang-r510928/bin:$PATH
+          export ARCH=arm64
+          export SUBARCH=arm64
+
+          chmod +x build_kernel.sh
+
+          echo "=== Uruchamianie build_kernel.sh ==="
+          ./build_kernel.sh
+
+      - name: Upload Kernel Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Flip3-Android16-Kernel-ZeroMount-AlexFurina
+          path: |
+            arch/arm64/boot/Image*
+            out/arch/arm64/boot/Image*
+            out/arch/arm64/boot/dtbo.img
+            out/arch/arm64/boot/dtb*
+            *.zip
+          if-no-files-found: warn
+
+      - name: Build Summary
+        run: |
+          echo "=== BUILD SUMMARY ==="
+          ls -lh arch/arm64/boot/ 2>/dev/null || true
+          ls -lh out/arch/arm64/boot/ 2>/dev/null || true
