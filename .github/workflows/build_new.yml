@@ -83,10 +83,15 @@ jobs:
             gzip \
             bzip2 \
             rar \
-            unrar \
-            libtinfo5
-          
-          # Ustawiamy python jako alias do python3 (ważne dla starych skryptów kernela)
+            unrar
+
+          # Instalacja libtinfo5 (brakuje w Ubuntu 24.04)
+          echo "Installing libtinfo5 from Ubuntu 23.04 repository..."
+          wget http://security.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2ubuntu0.1_amd64.deb
+          sudo apt install -y ./libtinfo5_6.3-2ubuntu0.1_amd64.deb
+          rm -f libtinfo5_6.3-2ubuntu0.1_amd64.deb
+
+          # Ustawiamy python jako alias do python3
           sudo update-alternatives --install /usr/bin/python python /usr/bin/python3 10
           echo "Python version:"
           python --version
