@@ -15,7 +15,7 @@ jobs:
       builddate: ${{ steps.generate-builddate.outputs.builddate }}
     steps:
       - name: "😄 Checkout"
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: "😆 Generate Matrix"
         id: generate-matrix
@@ -47,7 +47,7 @@ jobs:
       KERNEL_BRANCH: ${{ matrix.repos.kernelSource.branch }}
       KERNEL_DEVICE: ${{ matrix.repos.kernelSource.device }}
       DEFCONFIG_NAME: ${{ matrix.repos.kernelSource.defconfig }}
-      withKernelSU: false                     # WYŁĄCZONE - bez KernelSU
+      withKernelSU: false        # WYŁĄCZONE – KernelSU jest już w źródłach AlexFuriny
       ccache: ${{ matrix.repos.ccache }}
       useAnykernel: ${{ matrix.repos.AnyKernel3.use }}
       release: ${{ matrix.repos.AnyKernel3.release }}
@@ -56,11 +56,16 @@ jobs:
       - name: "⭐ Install prerequisites"
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev \
-            clang lld llvm make git curl wget jq libncurses5 libtinfo5 ccache \
-            zip unzip tar gzip python2 python2-dev
+          sudo apt-get install -y \
+            build-essential bc bison flex \
+            libssl-dev libelf-dev libfl-dev libncurses5 libtinfo5 \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
+            clang lld llvm \
+            make git curl wget jq \
+            ccache zip unzip tar gzip bzip2 rar unrar \
+            python2 python2-dev
 
-      - name: "🚄 Create cache key from `repos`"
+      - name: "🚄 Create cache key from repos"
         if: ${{ env.ccache == 'true' }}
         id: ccache_key
         run: |
@@ -69,7 +74,7 @@ jobs:
 
       - name: "🚅 Cache ccache files"
         if: ${{ env.ccache == 'true' }}
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: |
             ~/.ccache
@@ -78,18 +83,22 @@ jobs:
           restore-keys: |
             ccache-${{ env.KERNEL_NAME }}-${{ steps.ccache_key.outputs.CACHE_KEY }}-${{ env.builddate }}
 
-      - name: "⏰ Setup Anykernel3"
+      - name: "⏰ Setup AnyKernel3"
         env:
           params: "${{ toJSON(matrix.repos.AnyKernel3) }}"
         run: |
           ANYKERNEL_REPO=$(echo $params | jq -r ".repo")
           ANYKERNEL_BRANCH=$(echo $params | jq -r ".branch")
           git clone --recursive --depth=1 -j $(nproc) --branch $ANYKERNEL_BRANCH $ANYKERNEL_REPO AnyKernel3
+          echo "🤔 Setup AnyKernel3 => ($ANYKERNEL_REPO)"
 
-      - name: "🌟 Clone kernel source (AlexFurina)"
+      - name: "🌟 Clone kernel source (AlexFurina / Flip3-Android16)"
         run: |
-          git clone --recursive --depth=1 -j $(nproc) --branch Flip3-Android16 \
-            https://github.com/AlexFurina/android_kernel_samsung_sm8350.git $KERNEL_NAME
+          git clone --recursive --depth=1 -j $(nproc) \
+            --branch Flip3-Android16 \
+            https://github.com/AlexFurina/android_kernel_samsung_sm8350.git \
+            $KERNEL_NAME
+          echo "🤔 Clone kernel source => AlexFurina/android_kernel_samsung_sm8350"
 
       - name: "💫 Get toolchains"
         env:
@@ -102,19 +111,20 @@ jobs:
             toolchain_repo=$(echo $toolchains | jq -r ".[$i].repo")
             toolchain_branch=$(echo $toolchains | jq -r ".[$i].branch")
             toolchain_url=$(echo $toolchains | jq -r ".[$i].url")
-            
+
             if [ -z "${toolchain_url:-}" ] || [ "$toolchain_url" = "null" ]; then
               git clone --recursive --depth=1 -j $(nproc) --branch $toolchain_branch $toolchain_repo $toolchain_name
+              echo "🤔 Clone $toolchain_name => ($toolchain_repo)"
             else
               wget "$toolchain_url"
               filename="${toolchain_url##*/}"
               mkdir -p $toolchain_name
               case "$filename" in
-                *.zip) unzip -d $toolchain_name "$filename" ;;
-                *.tar) tar xvf "$filename" -C $toolchain_name ;;
+                *.zip)    unzip -d $toolchain_name "$filename" ;;
+                *.tar)    tar xvf "$filename" -C $toolchain_name ;;
                 *.tar.gz) tar zxvf "$filename" -C $toolchain_name ;;
-                *.rar) unrar x "$filename" $toolchain_name ;;
-                *) echo "unknown file type: $filename" ;;
+                *.rar)    unrar x "$filename" $toolchain_name ;;
+                *)        echo "unknown file type: $filename" ;;
               esac
             fi
 
@@ -123,53 +133,73 @@ jobs:
             done
           done
 
-      - name: "🔧 Apply ZeroMount 5.4 + auto fix conflicts"
+      - name: "🔧 Apply ZeroMount 5.4 patch"
         working-directory: ${{ env.KERNEL_NAME }}
         run: |
           echo "=== Downloading ZeroMount 5.4 patch ==="
-          wget -q https://raw.githubusercontent.com/Enginex0/Super-Builders/main/android12-5.4/SukiSU-Ultra/patches/60_zeromount-android12-5.4.patch -O ../zeromount.patch
+          wget -q \
+            https://raw.githubusercontent.com/Enginex0/Super-Builders/main/android12-5.4/SukiSU-Ultra/patches/60_zeromount-android12-5.4.patch \
+            -O ../zeromount.patch
 
-          echo "=== Applying patch ==="
+          echo "=== Applying patch (--reject allows partial apply) ==="
           git apply --reject --ignore-whitespace ../zeromount.patch || true
 
-          echo "=== Auto fixing known conflicts ==="
-          # fs/Kconfig
-          cat >> fs/Kconfig << 'EOF'
+          echo "=== Auto-fixing known conflicts ==="
+
+          # fs/Kconfig – dodaj blok CONFIG_ZEROMOUNT jeśli go nie ma
+          if ! grep -q "config ZEROMOUNT" fs/Kconfig; then
+            cat >> fs/Kconfig << 'EOF'
 
           config ZEROMOUNT
               bool "ZeroMount Path Redirection Subsystem"
               default y
               help
-                ZeroMount allows path redirection and virtual file injection without mounting filesystems.
+                ZeroMount allows path redirection and virtual file injection
+                without mounting filesystems.
           EOF
+          fi
 
-          # fs/Makefile
-          sed -i '/obj-$(CONFIG_EROFS_FS)[[:space:]]\+= erofs\//a obj-$(CONFIG_ZEROMOUNT)		+= zeromount.o' fs/Makefile || true
+          # fs/Makefile – dodaj wpis dla zeromount.o jeśli go nie ma
+          if ! grep -q "zeromount" fs/Makefile; then
+            sed -i '/obj-$(CONFIG_EROFS_FS)[[:space:]]\+= erofs\//a obj-$(CONFIG_ZEROMOUNT)\t\t+= zeromount.o' fs/Makefile || true
+          fi
 
-          # proc/base.c
-          sed -i '/#include "internal.h"/a #ifdef CONFIG_ZEROMOUNT\n#include <linux/zeromount.h>\n#endif' fs/proc/base.c || true
+          # fs/proc/base.c – include zeromount.h jeśli go nie ma
+          if ! grep -q "zeromount.h" fs/proc/base.c; then
+            sed -i '/#include "internal.h"/a #ifdef CONFIG_ZEROMOUNT\n#include <linux\/zeromount.h>\n#endif' fs/proc/base.c || true
+          fi
 
-          # proc/task_mmu.c
-          sed -i '/#include <linux/pkeys.h>/a #ifdef CONFIG_ZEROMOUNT\n#include <linux/zeromount.h>\n#endif' fs/proc/task_mmu.c || true
+          # fs/proc/task_mmu.c – include zeromount.h jeśli go nie ma
+          if ! grep -q "zeromount.h" fs/proc/task_mmu.c; then
+            sed -i '/#include <linux\/pkeys.h>/a #ifdef CONFIG_ZEROMOUNT\n#include <linux\/zeromount.h>\n#endif' fs/proc/task_mmu.c || true
+          fi
 
-          # Enable CONFIG
-          echo "CONFIG_ZEROMOUNT=y" >> arch/arm64/configs/msm_lahaina_defconfig || true
+          # Włącz CONFIG_ZEROMOUNT w defconfig jeśli jeszcze nie ma
+          DEFCONFIG_PATH="arch/arm64/configs/${{ env.DEFCONFIG_NAME }}"
+          if [ -f "$DEFCONFIG_PATH" ] && ! grep -q "CONFIG_ZEROMOUNT" "$DEFCONFIG_PATH"; then
+            echo "CONFIG_ZEROMOUNT=y" >> "$DEFCONFIG_PATH"
+          fi
 
-          echo "=== ZeroMount applied and fixed ==="
+          echo "=== ZeroMount 5.4 applied ==="
 
-      - name: "😎 Set args"
+      - name: "😎 Set build args"
         id: generate-args
         env:
           params: "${{ toJSON(matrix.repos.params) }}"
           THREAD: $(nproc --all)
         run: |
+          echo "🤔 PATH Variable: $PATH"
+
           ARCH=$(echo $params | jq -r ".ARCH")
           CC=$(echo $params | jq -r ".CC")
+
           args="-j${{ env.THREAD }}"
           if [ -n "${{ env.OUT_DIR }}" ]; then
             mkdir -p ${{ env.OUT_DIR }} && args="$args O=${{ env.OUT_DIR }}"
           fi
-          if [ -n "$ARCH" ]; then args="$args ARCH=$ARCH"; fi
+          if [ -n "$ARCH" ]; then
+            args="$args ARCH=$ARCH"
+          fi
           if [ -n "$CC" ]; then
             if [[ "$CC" == *"/"* ]]; then CC=${{ env.WORKSPACE }}/$CC; fi
             if [ ${{ env.ccache }} = true ]; then
@@ -184,8 +214,8 @@ jobs:
             if [[ "$value" == *"/"* ]]; then value="${{ env.WORKSPACE }}/$value"; fi
             args="$args $key=$value"
           done < <(jq -r '.externalCommand | to_entries[] | "\(.key)=\(.value)"' <<< "$params")
-          
-          echo "args = $args"
+
+          echo "🤔 $args"
           echo "ARCH=$ARCH" >> $GITHUB_OUTPUT
           echo "args=$args" >> $GITHUB_OUTPUT
 
@@ -194,6 +224,7 @@ jobs:
         env:
           args: ${{ steps.generate-args.outputs.args }}
         run: |
+          echo "PATH Variable: $PATH"
           make ${{ env.args }} ${{ env.DEFCONFIG_NAME }}
 
       - name: "🎶 Build kernel"
@@ -201,21 +232,85 @@ jobs:
         env:
           args: ${{ steps.generate-args.outputs.args }}
         run: |
+          echo "PATH Variable: $PATH"
           make ${{ env.args }}
 
-      # Uploady (skrócone, ale zachowane najważniejsze)
-      - name: "Upload Image.gz + dtbo"
-        uses: actions/upload-artifact@v3
-        with:
-          name: Flip3-ZeroMount-${{ env.builddate }}
-          path: |
-            ${{ env.OUT_DIR }}/arch/arm64/boot/Image*
-            ${{ env.OUT_DIR }}/arch/arm64/boot/dtbo.img
-          if-no-files-found: warn
+      # ── Uploady artefaktów (v4 – bez deprecacji) ──────────────────────────
 
-      - name: "Pack AnyKernel3"
+      - name: "💛 Upload Image"
+        uses: actions/upload-artifact@v4
+        env:
+          arch: ${{ steps.generate-args.outputs.ARCH }}
+        with:
+          name: Image-${{ env.KERNEL_DEVICE }}-${{ env.KERNEL_NAME }}-${{ env.builddate }}
+          path: ${{ env.OUT_DIR }}/arch/${{ env.arch }}/boot/Image
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: "💙 Upload Image.gz"
+        uses: actions/upload-artifact@v4
+        env:
+          arch: ${{ steps.generate-args.outputs.ARCH }}
+        with:
+          name: Image.gz-${{ env.KERNEL_DEVICE }}-${{ env.KERNEL_NAME }}-${{ env.builddate }}
+          path: ${{ env.OUT_DIR }}/arch/${{ env.arch }}/boot/Image.gz
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: "💜 Upload dtb"
+        uses: actions/upload-artifact@v4
+        env:
+          arch: ${{ steps.generate-args.outputs.ARCH }}
+        with:
+          name: dtb-${{ env.KERNEL_DEVICE }}-${{ env.KERNEL_NAME }}-${{ env.builddate }}
+          path: ${{ env.OUT_DIR }}/arch/${{ env.arch }}/boot/dtb
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: "❤️ Upload dtbo.img"
+        uses: actions/upload-artifact@v4
+        env:
+          arch: ${{ steps.generate-args.outputs.ARCH }}
+        with:
+          name: dtbo.img-${{ env.KERNEL_DEVICE }}-${{ env.KERNEL_NAME }}-${{ env.builddate }}
+          path: ${{ env.OUT_DIR }}/arch/${{ env.arch }}/boot/dtbo.img
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: "❤️ Pack AnyKernel3.zip"
         if: ${{ env.useAnykernel == 'true' }}
+        env:
+          arch: ${{ steps.generate-args.outputs.ARCH }}
+          anykernel: "${{ env.WORKSPACE }}/${{ env.KERNEL_DEVICE }}-${{ env.KERNEL_NAME }}_${{ env.builddate }}"
         run: |
-          cp -f ${{ env.OUT_DIR }}/arch/arm64/boot/Image* AnyKernel3/ 2>/dev/null || true
-          cp -f ${{ env.OUT_DIR }}/arch/arm64/boot/dtbo.img AnyKernel3/ 2>/dev/null || true
-          cd AnyKernel3 && zip -q -r "../Flip3-ZeroMount_${{ env.builddate }}.zip" *
+          if [ -e "${{ env.OUT_DIR }}/arch/${{ env.arch }}/boot/Image" ]; then
+            cp -f ${{ env.OUT_DIR }}/arch/${{ env.arch }}/boot/Image ./AnyKernel3/
+          fi
+          if [ -e "${{ env.OUT_DIR }}/arch/${{ env.arch }}/boot/Image.gz" ]; then
+            cp -f ${{ env.OUT_DIR }}/arch/${{ env.arch }}/boot/Image.gz ./AnyKernel3/
+          fi
+          if [ -e "${{ env.OUT_DIR }}/arch/${{ env.arch }}/boot/dtbo" ]; then
+            cp -f ${{ env.OUT_DIR }}/arch/${{ env.arch }}/boot/dtbo ./AnyKernel3/
+          fi
+          if [ -e "${{ env.OUT_DIR }}/arch/${{ env.arch }}/boot/dtbo.img" ]; then
+            cp -f ${{ env.OUT_DIR }}/arch/${{ env.arch }}/boot/dtbo.img ./AnyKernel3/
+          fi
+          cd AnyKernel3/
+          zip -q -r "${{ env.anykernel }}.zip" *
+
+      - name: "💾 Upload AnyKernel3 zip => (${{ env.builddate }})"
+        uses: actions/upload-artifact@v4
+        if: ${{ env.useAnykernel == 'true' }}
+        with:
+          name: "${{ env.KERNEL_DEVICE }}-${{ env.KERNEL_NAME }}_${{ env.builddate }}"
+          path: AnyKernel3/*
+          retention-days: 7
+
+      - name: "🧧 Create GitHub Release => (${{ env.builddate }})"
+        continue-on-error: true
+        uses: softprops/action-gh-release@v2
+        if: ${{ env.useAnykernel == 'true' && env.release == 'true' }}
+        with:
+          tag_name: v${{ env.builddate }}.${{ github.run_number }}
+          files: "${{ env.WORKSPACE }}/${{ env.KERNEL_DEVICE }}-${{ env.KERNEL_NAME }}_${{ env.builddate }}.zip"
+          generate_release_notes: true
