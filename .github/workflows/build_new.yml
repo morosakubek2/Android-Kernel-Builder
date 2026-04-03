@@ -62,10 +62,12 @@ jobs:
       - name: "⭐ Install prerequisites"
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y build-essential bc gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi libssl-dev libfl-dev curl git wget libarchive-tools ccache python3 python3-dev python-is-python3 zip unzip tar gzip bzip2 rar unrar dwarves libncurses-dev libelf-dev
+          sudo apt-get install -y build-essential bc gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
+            libssl-dev libfl-dev curl git wget libarchive-tools ccache python3 python3-dev \
+            python-is-python3 zip unzip tar gzip bzip2 rar unrar dwarves libncurses-dev \
+            libelf-dev flex bison
 
-          # libtinfo5 + ncurses compatibility dla SM8350
-          echo "=== Instalacja libtinfo5 i libncurses5 ==="
+          # libtinfo5 + ncurses (dla SM8350)
           wget -q https://security.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2ubuntu0.1_amd64.deb
           wget -q https://security.ubuntu.com/ubuntu/pool/universe/n/ncurses/libncurses5_6.3-2ubuntu0.1_amd64.deb
           sudo apt install -y ./*.deb
@@ -128,7 +130,6 @@ jobs:
 
             if [ -z "$toolchain_url" ] || [ "$toolchain_url" = "null" ]; then
               git clone --recursive --depth=1 -j $(nproc) --branch "$toolchain_branch" "$toolchain_repo" "$toolchain_name"
-              echo "🤔 Cloned $toolchain_name from git"
             else
               wget -q "$toolchain_url"
               filename="${toolchain_url##*/}"
@@ -196,14 +197,6 @@ jobs:
           if [ -d "./drivers/kernelsu" ]; then rm -rf "./drivers/kernelsu"; fi
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
 
-      # === KLUCZOWA POPRAWKA DLA STAREGO KERNELA 5.4 ===
-      - name: "🔧 Disable BTF (for old Samsung 5.4 kernel)"
-        working-directory: ${{ env.KERNEL_NAME }}
-        run: |
-          echo "Disabling CONFIG_DEBUG_INFO_BTF to prevent sub-make Error 2"
-          sed -i '/CONFIG_DEBUG_INFO_BTF/d' arch/${{ steps.generate-args.outputs.ARCH }}/configs/${{ env.DEFCONFIG_NAME }} || true
-          echo "# CONFIG_DEBUG_INFO_BTF is not set" >> arch/${{ steps.generate-args.outputs.ARCH }}/configs/${{ env.DEFCONFIG_NAME }}
-
       - name: "👍 Make defconfig"
         working-directory: ${{ env.KERNEL_NAME }}
         env:
@@ -212,6 +205,10 @@ jobs:
         run: |
           echo "PATH Variable: $PATH"
           make ${{ env.args }} ${{ env.DEFCONFIG_NAME }}
+          
+          # WYŁĄCZAMY BTF - to naprawia błąd sub-make Error 2 na kernelu 5.4 Samsung
+          echo "CONFIG_DEBUG_INFO_BTF=n" >> .config
+          echo "CONFIG_DEBUG_INFO_BTF=n" >> arch/${{ env.arch }}/configs/${{ env.DEFCONFIG_NAME }}
 
       - name: "🎶 Build kernel"
         working-directory: ${{ env.KERNEL_NAME }}
@@ -219,9 +216,9 @@ jobs:
           args: ${{ steps.generate-args.outputs.args }}
         run: |
           echo "PATH Variable: $PATH"
-          make ${{ env.args }}
+          # WERROR=0 + DEBUG_INFO_BTF=0 na wszelki wypadek
+          make ${{ env.args }} WERROR=0 DEBUG_INFO_BTF=0
 
-      # Upload sections (Image, Image.gz, dtb, dtbo, AnyKernel3) - pozostają bez zmian
       - name: "💛 Upload Image"
         uses: actions/upload-artifact@v4
         with:
