@@ -85,17 +85,24 @@ jobs:
             rar \
             unrar
 
-          # Instalacja libtinfo5 (brakuje w Ubuntu 24.04)
-          echo "Installing libtinfo5 from Ubuntu 23.04 repository..."
-          wget http://security.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2ubuntu0.1_amd64.deb
-          sudo apt install -y ./libtinfo5_6.3-2ubuntu0.1_amd64.deb
-          rm -f libtinfo5_6.3-2ubuntu0.1_amd64.deb
+          # Instalacja libtinfo5 + libncurses5 (często potrzebne przy starych kernelach Samsung)
+          echo "Installing libtinfo5 and libncurses5 compatibility packages..."
+          wget -q http://security.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2ubuntu0.1_amd64.deb
+          wget -q http://security.ubuntu.com/ubuntu/pool/universe/n/ncurses/libncurses5_6.3-2ubuntu0.1_amd64.deb
+          sudo apt install -y ./*.deb
+          rm -f *.deb
+
+          # Dodatkowy symlink - bardzo często rozwiązuje błędy przy make w starych kernelach
+          sudo ln -s /usr/lib/x86_64-linux-gnu/libncurses.so.6 /usr/lib/x86_64-linux-gnu/libtinfo.so.5 || true
+          sudo ln -s /usr/lib/x86_64-linux-gnu/libncurses.so.6 /usr/lib/x86_64-linux-gnu/libtinfo5.so.6 || true
 
           # Ustawiamy python jako alias do python3
           sudo update-alternatives --install /usr/bin/python python /usr/bin/python3 10
-          echo "Python version:"
+          echo "=== Python versions ==="
           python --version
           python3 --version
+          echo "=== libtinfo check ==="
+          ls -l /usr/lib/x86_64-linux-gnu/libtinfo*
 
       - name: "🚄 Create cache key from `repos`"
         if: ${{ env.ccache == 'true' }}
@@ -106,7 +113,7 @@ jobs:
 
       - name: "🚅 Cache ccache files"
         if: ${{ env.ccache == 'true' }}
-        uses: actions/cache@v3
+        uses: actions/cache@v4          # Zaktualizowane z v3 na v4
         with:
           path: |
             ~/.ccache
