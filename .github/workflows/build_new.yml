@@ -64,7 +64,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y build-essential bc gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi libssl-dev libfl-dev curl git wget libarchive-tools ccache python3 python3-dev python-is-python3 zip unzip tar gzip bzip2 rar unrar dwarves libncurses-dev libelf-dev
 
-          # libtinfo5 + ncurses compatibility
+          # libtinfo5 + ncurses compatibility dla SM8350
           echo "=== Instalacja libtinfo5 i libncurses5 ==="
           wget -q https://security.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2ubuntu0.1_amd64.deb
           wget -q https://security.ubuntu.com/ubuntu/pool/universe/n/ncurses/libncurses5_6.3-2ubuntu0.1_amd64.deb
@@ -78,8 +78,7 @@ jobs:
 
           echo "=== Debug ==="
           python --version
-          dwarves --version || echo "dwarves installed"
-          ls -l /usr/lib/x86_64-linux-gnu/libtinfo*
+          dwarves --version || echo "dwarves OK"
 
       - name: "🚄 Create cache key from `repos`"
         if: ${{ env.ccache == 'true' }}
@@ -113,7 +112,6 @@ jobs:
           git clone --recursive --depth=1 -j $(nproc) --branch $KERNEL_BRANCH $KERNEL_REPO $KERNEL_NAME
           echo "🤔 Clone kernel source => ($KERNEL_REPO)"
 
-      # === POPRAWIONA SEKCJA TOOLCHAINS (główna naprawa) ===
       - name: "💫 Get toolchains"
         run: |
           echo '${{ toJSON(matrix.repos.toolchains) }}' > toolchains.json
@@ -144,7 +142,6 @@ jobs:
               rm -f "$filename"
             fi
 
-            # Dodaj binPath do PATH
             jq -r ".[$i].binPath[] | \"${WORKSPACE}/$toolchain_name/\" + ." toolchains.json | while read -r bin_path; do
               echo "$bin_path" >> $GITHUB_PATH
             done
@@ -199,6 +196,14 @@ jobs:
           if [ -d "./drivers/kernelsu" ]; then rm -rf "./drivers/kernelsu"; fi
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
 
+      # === KLUCZOWA POPRAWKA DLA STAREGO KERNELA 5.4 ===
+      - name: "🔧 Disable BTF (for old Samsung 5.4 kernel)"
+        working-directory: ${{ env.KERNEL_NAME }}
+        run: |
+          echo "Disabling CONFIG_DEBUG_INFO_BTF to prevent sub-make Error 2"
+          sed -i '/CONFIG_DEBUG_INFO_BTF/d' arch/${{ steps.generate-args.outputs.ARCH }}/configs/${{ env.DEFCONFIG_NAME }} || true
+          echo "# CONFIG_DEBUG_INFO_BTF is not set" >> arch/${{ steps.generate-args.outputs.ARCH }}/configs/${{ env.DEFCONFIG_NAME }}
+
       - name: "👍 Make defconfig"
         working-directory: ${{ env.KERNEL_NAME }}
         env:
@@ -216,8 +221,7 @@ jobs:
           echo "PATH Variable: $PATH"
           make ${{ env.args }}
 
-      # (pozostałe sekcje uploadów bez zmian - skopiuj je z poprzedniej wersji jeśli chcesz)
-
+      # Upload sections (Image, Image.gz, dtb, dtbo, AnyKernel3) - pozostają bez zmian
       - name: "💛 Upload Image"
         uses: actions/upload-artifact@v4
         with:
