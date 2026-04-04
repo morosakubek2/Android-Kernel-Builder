@@ -15,7 +15,8 @@ jobs:
       repos: ${{ steps.generate-matrix.outputs.repos }}
       builddate: ${{ steps.generate-builddate.outputs.builddate }}
     steps:
-      - uses: actions/checkout@v3
+      - name: "😄 Checkout"
+        uses: actions/checkout@v3
 
       - name: "😆 Generate Matrix"
         id: generate-matrix
@@ -79,7 +80,15 @@ jobs:
           KERNEL_GIT_REF=$(git -C ${KERNEL_NAME} rev-parse --short HEAD)
           echo "KERNEL_GIT_REF=${KERNEL_GIT_REF}" >> ${GITHUB_OUTPUT}
 
-      - name: "💫 Get Gonon Clang"
+      - name: "🧹 Full Clean"
+        working-directory: ${{ env.KERNEL_NAME }}
+        run: |
+          echo "Performing full clean before build..."
+          make mrproper 2>/dev/null || true
+          rm -rf "${{ env.OUT_DIR }}" 2>/dev/null || true
+          echo "Clean completed."
+
+      - name: "💫 Get Gonon Clang toolchain"
         env:
           toolchains: "${{ toJSON(matrix.repos.toolchains) }}"
         run: |
@@ -100,49 +109,65 @@ jobs:
         run: |
           ARCH=$(echo ${params} | jq -r ".ARCH")
           CC=$(echo ${params} | jq -r ".CC")
+
           args="-j$(nproc --all) O=${{ env.OUT_DIR }} ARCH=${ARCH} CC=${CC}"
           while read -r externalCommand; do
             key=$(echo "${externalCommand}" | cut -d= -f1)
             value=$(echo "${externalCommand}" | cut -d= -f2)
             args="${args} ${key}=${value}"
           done < <(jq -r '.externalCommand | to_entries[] | "\(.key)=\(.value)"' <<< "${params}")
+
           echo "args=${args}" >> ${GITHUB_OUTPUT}
           echo "ARCH=${ARCH}" >> ${GITHUB_OUTPUT}
 
-      # ====================== BARDZO MOCNY DEBUG ======================
-      - name: "🔬 Ultra Debug - Toolchain + Config"
+      - name: "🔬 Toolchain Diagnostics"
         working-directory: ${{ env.KERNEL_NAME }}
         run: |
-          echo "=== Clang Version ==="
-          clang --version
-          echo "=== ld.lld ==="
+          echo "Clang version:"
+          clang --version | head -10
+          echo "ld.lld version:"
           ld.lld --version
-          echo "=== PATH ==="
-          echo $PATH
-          echo "=== gonon-clang binaries ==="
-          ls -l ${{ env.WORKSPACE }}/gonon-clang/bin/ | head -30
 
-      - name: "🛠️ Fix Camera Techpack Issues"
-        working-directory: ${{ env.KERNEL_NAME }}
-        run: |
-          echo "Disabling Samsung camera modules that often cause HDRINST errors..."
-          scripts/config --file out/.config -d CONFIG_QCOM_CAMERA_SS || true
-          scripts/config --file out/.config -d CONFIG_CAM_SS || true
-          scripts/config --file out/.config -d CONFIG_CAMERA_BOKEH || true
-          scripts/config --file out/.config -d CONFIG_CAMERA_SAMSUNG || true
-          scripts/config --file out/.config -d CONFIG_CAMERA_REAR || true
-          make ${{ steps.generate-args.outputs.args }} ${{ env.DEFCONFIG_NAME }}
-
-      - name: "🎶 Build kernel - SINGLE THREAD + FULL VERBOSE (najlepszy debug)"
+      - name: "🎶 Build kernel - MAX VERBOSE"
         working-directory: ${{ env.KERNEL_NAME }}
         env:
           args: ${{ steps.generate-args.outputs.args }}
         run: |
-          echo "=== Starting build with -j1 V=1 (single thread + verbose) ==="
-          make ${{ env.args }} -j1 V=1 2>&1 | tee full_build.log
+          echo "=== Starting MAX VERBOSE build ==="
 
-          echo "=== === LAST 150 LINES WITH ERRORS === ==="
-          tail -150 full_build.log | grep -E "(error|Error|failed|HDRINST|make\[|fatal)" || echo "No error keyword found"
+          # Defconfig
+          echo "→ Running defconfig..."
+          make ${{ env.args }} ${{ env.DEFCONFIG_NAME }} V=1 2>&1 | tee defconfig.log
 
-          echo "=== Full last 100 lines ==="
+          # Pełna budowa z maksymalnym verbose
+          echo "→ Starting full build (V=2, single thread)..."
+          make ${{ env.args }} V=2 -j1 2>&1 | tee full_build.log
+
+          echo "=================================================="
+          echo "=== LAST 200 LINES - LOOK FOR ERRORS HERE ==="
+          echo "=================================================="
+          tail -200 full_build.log | grep -E "(error:|Error|failed|HDRINST|fatal|undefined|No such file|make\[)" || echo "No obvious error keywords found"
+
+          echo "=================================================="
+          echo "=== LAST 100 LINES OF BUILD ==="
+          echo "=================================================="
           tail -100 full_build.log
+
+      - name: "Define output artifact names"
+        id: define-output-names
+        env:
+          run_number: ${{ github.run_number }}
+          KERNEL_GIT_REF: ${{ steps.clone-kernel.outputs.KERNEL_GIT_REF }}
+        run: |
+          echo "release_name=[${{ env.builddate }}.${run_number}] ${KERNEL_DEVICE}" >> ${GITHUB_OUTPUT}
+          echo "image_gz=Image.gz-${KERNEL_DEVICE}-${KERNEL_NAME}-${{ env.builddate }}" >> ${GITHUB_OUTPUT}
+          echo "dtbo_img=dtbo.img-${KERNEL_DEVICE}-${KERNEL_NAME}-${{ env.builddate }}" >> ${GITHUB_OUTPUT}
+          echo "release_zip=${KERNEL_DEVICE}-${KERNEL_NAME}.zip" >> ${GITHUB_OUTPUT}
+
+      - name: "💙 Upload Image.gz"
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.define-output-names.outputs.image_gz }}
+          path: ${{ env.OUT_DIR }}/arch/${{ steps.generate-args.outputs.ARCH }}/boot/Image.gz
+          if-no-files-found: ignore
+          retention-days: 90
