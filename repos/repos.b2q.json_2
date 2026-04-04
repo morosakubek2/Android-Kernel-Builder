@@ -5,26 +5,16 @@
       "repo": "https://github.com/morosakubek2/flip_3_android_kernel_samsung_sm8350",
       "branch": "Flip3-Android16",
       "device": "b2q",
-      "defconfig": "b2q_defconfig"
+      "defconfig": "gki_defconfig"
     },
     "withKernelSU": false,
     "withSUSFS": false,
     "withLXC": false,
     "toolchains": [
       {
-        "url": "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/tags/android-14.0.0_r0.68.tar.gz",
-        "name": "gcc64",
-        "binPath": ["bin"]
-      },
-      {
-        "url": "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/tags/android-14.0.0_r0.68.tar.gz",
-        "name": "gcc",
-        "binPath": ["bin"]
-      },
-      {
-        "repo": "https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b.git",
-        "branch": "lineage-20.0",
-        "name": "clang",
+        "repo": "https://github.com/Gonon-Kernel/gonon-clang.git",
+        "branch": "master",
+        "name": "gonon-clang",
         "binPath": ["bin"]
       }
     ],
@@ -32,19 +22,20 @@
       "ARCH": "arm64",
       "CC": "clang",
       "externalCommand": {
-        "CROSS_COMPILE": "gcc64/bin/aarch64-linux-android-",
-        "CROSS_COMPILE_ARM32": "gcc/bin/arm-linux-androideabi-",
+        "CROSS_COMPILE": "",
+        "CROSS_COMPILE_ARM32": "",
         "CLANG_TRIPLE": "aarch64-linux-gnu-",
         "CONFIG_BUILD_ARM64_DT_OVERLAY": "y",
-        "LD": "clang/bin/ld.lld",
-        "AR": "clang/bin/llvm-ar",
-        "NM": "clang/bin/llvm-nm",
-        "OBJCOPY": "clang/bin/llvm-objcopy",
-        "OBJDUMP": "clang/bin/llvm-objdump",
-        "READELF": "clang/bin/llvm-readelf",
-        "STRIP": "clang/bin/llvm-strip",
+        "LD": "ld.lld",
+        "AR": "llvm-ar",
+        "NM": "llvm-nm",
+        "OBJCOPY": "llvm-objcopy",
+        "OBJDUMP": "llvm-objdump",
+        "READELF": "llvm-readelf",
+        "STRIP": "llvm-strip",
         "LLVM": "1",
-        "LLVM_IAS": "1"
+        "LLVM_IAS": "1",
+        "LLVM_LLD": "1"
       }
     },
     "AnyKernel3": {
