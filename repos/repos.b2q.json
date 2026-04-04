@@ -10,14 +10,14 @@
     "withKernelSU": false,
     "withSUSFS": false,
     "withLXC": false,
-    "toolchains": [
-      {
-        "repo": "https://github.com/kdrag0n/proton-clang.git",
-        "branch": "master",
-        "name": "proton-clang",
-        "binPath": ["bin"]
-      }
-    ],
+"toolchains": [
+  {
+    "repo": "https://github.com/ZyCromerZ/Clang",
+    "branch": "18.0.0-release",
+    "name": "zyc-clang",
+    "binPath": ["bin"]
+  }
+],
     "params": {
       "ARCH": "arm64",
       "CC": "clang",
