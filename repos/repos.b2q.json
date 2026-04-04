@@ -10,22 +10,22 @@
     "withKernelSU": false,
     "withSUSFS": false,
     "withLXC": false,
-"toolchains": [
-  {
-    "repo": "https://github.com/ZyCromerZ/Clang",
-    "branch": "18.0.0-release",
-    "name": "zyc-clang",
-    "binPath": ["bin"]
-  }
-],
+    "toolchains": [
+      {
+        "repo": "https://github.com/Neutron-Toolchains/clang-build-catalogue",
+        "branch": "main",
+        "name": "neutron-clang",
+        "binPath": ["bin"]
+      }
+    ],
     "params": {
       "ARCH": "arm64",
       "CC": "clang",
       "externalCommand": {
-        "CROSS_COMPILE": "",
-        "CROSS_COMPILE_ARM32": "",
+        "CROSS_COMPILE": "aarch64-linux-gnu-",
+        "CROSS_COMPILE_ARM32": "arm-linux-gnueabi-",
         "CLANG_TRIPLE": "aarch64-linux-gnu-",
-        "CONFIG_BUILD_ARM64_DT_OVERLAY": "y",
+        "CONFIG_ARCH_QCOM": "y",
         "LD": "ld.lld",
         "AR": "llvm-ar",
         "NM": "llvm-nm",
@@ -33,8 +33,7 @@
         "OBJDUMP": "llvm-objdump",
         "READELF": "llvm-readelf",
         "STRIP": "llvm-strip",
-        "LLVM": "1",
-        "LLVM_IAS": "1"
+        "LLVM": "1"
       }
     },
     "AnyKernel3": {
