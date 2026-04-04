@@ -80,7 +80,7 @@ jobs:
           KERNEL_GIT_REF=$(git -C ${KERNEL_NAME} rev-parse --short HEAD)
           echo "KERNEL_GIT_REF=${KERNEL_GIT_REF}" >> ${GITHUB_OUTPUT}
 
-      - name: "💫 Get Gonon Clang toolchain"
+      - name: "💫 Get toolchain"
         env:
           toolchains: "${{ toJSON(matrix.repos.toolchains) }}"
         run: |
@@ -112,43 +112,35 @@ jobs:
           echo "args=${args}" >> ${GITHUB_OUTPUT}
           echo "ARCH=${ARCH}" >> ${GITHUB_OUTPUT}
 
-      - name: "🔬 Advanced Diagnostics"
-        working-directory: ${{ env.KERNEL_NAME }}
+      - name: "🔬 Toolchain Diagnostics"
         run: |
-          echo "══════════════════════════════════════════════════════════════"
-          echo "🔬 ADVANCED TOOLCHAIN DIAGNOSTICS"
-          echo "══════════════════════════════════════════════════════════════"
-          clang --version | head -10
-          ld.lld --version
-          echo "PATH: $PATH"
-          ls -l ${{ env.WORKSPACE }}/gonon-clang/bin/ | grep -E 'clang|ld|llvm' | head -20 || true
+          echo "=== which clang ==="
+          which clang
+          clang --version
+          echo "=== which as ==="
+          which as
+          echo "=== PATH ==="
+          echo $PATH
 
-      - name: "🛠️ Fix Camera/Techpack HDRINST errors"
-        working-directory: ${{ env.KERNEL_NAME }}
-        run: |
-          echo "Disabling problematic camera options..."
-          scripts/config --file out/.config -d CONFIG_QCOM_CAMERA_SS || true
-          scripts/config --file out/.config -d CONFIG_CAM_SS || true
-          scripts/config --file out/.config -d CONFIG_CAMERA_BOKEH || true
-          scripts/config --file out/.config -d CONFIG_CAMERA_SAMSUNG || true
-          make ${{ steps.generate-args.outputs.args }} ${{ env.DEFCONFIG_NAME }}
-
-      - name: "🎶 Build kernel (dtbs + dtbo + Image.gz)"
+      - name: "🎶 Build kernel"
         working-directory: ${{ env.KERNEL_NAME }}
         env:
           args: ${{ steps.generate-args.outputs.args }}
         run: |
-          echo "→ Building dtbs..."
-          make ${{ env.args }} dtbs 2>&1 | tee dtbs.log
+          CLANG_BIN=$(dirname $(which clang))
+          echo "Using clang from: ${CLANG_BIN}"
 
-          echo "→ Building dtbo.img..."
-          make ${{ env.args }} dtbo.img 2>&1 | tee dtbo.log || echo "⚠️ dtbo.img warning"
+          echo "→ Running defconfig..."
+          make ${{ env.args }} ${{ env.DEFCONFIG_NAME }} 2>&1 | tee defconfig.log
 
-          echo "→ Building Image.gz..."
-          make ${{ env.args }} -j$(nproc) Image.gz 2>&1 | tee build.log
+          echo "→ Starting full build..."
+          make ${{ env.args }} 2>&1 | tee build.log
 
-          echo "=== LAST 100 LINES ==="
-          tail -100 build.log
+          echo "=== ERRORS ==="
+          grep -n "error:\|unrecognized option\|fatal error\|undefined reference" build.log | head -50 || true
+
+          echo "=== LAST 50 LINES ==="
+          tail -50 build.log
 
       - name: "Define output artifact names"
         id: define-output-names
