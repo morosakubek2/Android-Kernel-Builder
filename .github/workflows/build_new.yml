@@ -83,28 +83,28 @@ jobs:
       - name: "🔧 Fix missing linux/types.h in uapi headers"
         working-directory: ${{ env.KERNEL_NAME }}
         run: |
-          echo "=== Scanning uapi headers for missing types.h ==="
+          echo "=== Scanning ONLY include/uapi/ ==="
 
-          grep -rl '\b__u8\b\|\b__u16\b\|\b__u32\b\|\b__u64\b\|\b__s8\b\|\b__s16\b\|\b__s32\b\|\b__s64\b\|\b__le16\b\|\b__le32\b\|\b__be16\b\|\b__be32\b' \
-            include/uapi/ 2>/dev/null | while read FILE; do
+          find include/uapi/ -name "*.h" | while read FILE; do
 
-            # Pomiń sam types.h i jego aliasy
-            case "$FILE" in
-              */linux/types.h|*/asm/types.h|*/asm-generic/types.h) continue ;;
-            esac
+            # Pomiń wszelkie pliki types.h
+            [[ "$FILE" == *types.h ]] && continue
 
-            if ! grep -q "linux/types.h" "$FILE"; then
-              if grep -q "^#define.*_H\b" "$FILE"; then
-                sed -i '/^#define.*_H\b/a #include <linux/types.h>' "$FILE"
-              else
-                sed -i '1s/^/#include <linux\/types.h>\n/' "$FILE"
+            # Sprawdź czy używa typów kernel ABI
+            if grep -qE '\b(__u8|__u16|__u32|__u64|__s8|__s16|__s32|__s64|__le16|__le32|__le64|__be16|__be32|__be64)\b' "$FILE"; then
+              if ! grep -q "linux/types.h" "$FILE"; then
+                # Wstaw zaraz po include guardzie (#define ..._H)
+                if grep -qE '^#define [A-Z_]+_H(_.*)?$' "$FILE"; then
+                  sed -i '/^#define [A-Z_]*_H/a #include <linux/types.h>' "$FILE"
+                else
+                  sed -i '1s/^/#include <linux\/types.h>\n/' "$FILE"
+                fi
+                echo "✅ Patched: $FILE"
               fi
-              echo "✅ Patched: $FILE"
             fi
           done
 
           echo "=== Done ==="
-
       - name: "😎 Set args"
         id: generate-args
         env:
