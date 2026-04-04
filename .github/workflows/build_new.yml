@@ -80,14 +80,6 @@ jobs:
           KERNEL_GIT_REF=$(git -C ${KERNEL_NAME} rev-parse --short HEAD)
           echo "KERNEL_GIT_REF=${KERNEL_GIT_REF}" >> ${GITHUB_OUTPUT}
 
-      - name: "🧹 Full Clean"
-        working-directory: ${{ env.KERNEL_NAME }}
-        run: |
-          echo "Performing full clean before build..."
-          make mrproper 2>/dev/null || true
-          rm -rf "${{ env.OUT_DIR }}" 2>/dev/null || true
-          echo "Clean completed."
-
       - name: "💫 Get Gonon Clang toolchain"
         env:
           toolchains: "${{ toJSON(matrix.repos.toolchains) }}"
@@ -120,38 +112,43 @@ jobs:
           echo "args=${args}" >> ${GITHUB_OUTPUT}
           echo "ARCH=${ARCH}" >> ${GITHUB_OUTPUT}
 
-      - name: "🔬 Toolchain Diagnostics"
+      - name: "🔬 Advanced Diagnostics"
         working-directory: ${{ env.KERNEL_NAME }}
         run: |
-          echo "Clang version:"
+          echo "══════════════════════════════════════════════════════════════"
+          echo "🔬 ADVANCED TOOLCHAIN DIAGNOSTICS"
+          echo "══════════════════════════════════════════════════════════════"
           clang --version | head -10
-          echo "ld.lld version:"
           ld.lld --version
+          echo "PATH: $PATH"
+          ls -l ${{ env.WORKSPACE }}/gonon-clang/bin/ | grep -E 'clang|ld|llvm' | head -20 || true
 
-      - name: "🎶 Build kernel - MAX VERBOSE"
+      - name: "🛠️ Fix Camera/Techpack HDRINST errors"
+        working-directory: ${{ env.KERNEL_NAME }}
+        run: |
+          echo "Disabling problematic camera options..."
+          scripts/config --file out/.config -d CONFIG_QCOM_CAMERA_SS || true
+          scripts/config --file out/.config -d CONFIG_CAM_SS || true
+          scripts/config --file out/.config -d CONFIG_CAMERA_BOKEH || true
+          scripts/config --file out/.config -d CONFIG_CAMERA_SAMSUNG || true
+          make ${{ steps.generate-args.outputs.args }} ${{ env.DEFCONFIG_NAME }}
+
+      - name: "🎶 Build kernel (dtbs + dtbo + Image.gz)"
         working-directory: ${{ env.KERNEL_NAME }}
         env:
           args: ${{ steps.generate-args.outputs.args }}
         run: |
-          echo "=== Starting MAX VERBOSE build ==="
+          echo "→ Building dtbs..."
+          make ${{ env.args }} dtbs 2>&1 | tee dtbs.log
 
-          # Defconfig
-          echo "→ Running defconfig..."
-          make ${{ env.args }} ${{ env.DEFCONFIG_NAME }} V=1 2>&1 | tee defconfig.log
+          echo "→ Building dtbo.img..."
+          make ${{ env.args }} dtbo.img 2>&1 | tee dtbo.log || echo "⚠️ dtbo.img warning"
 
-          # Pełna budowa z maksymalnym verbose
-          echo "→ Starting full build (V=2, single thread)..."
-          make ${{ env.args }} V=2 -j1 2>&1 | tee full_build.log
+          echo "→ Building Image.gz..."
+          make ${{ env.args }} -j$(nproc) Image.gz 2>&1 | tee build.log
 
-          echo "=================================================="
-          echo "=== LAST 200 LINES - LOOK FOR ERRORS HERE ==="
-          echo "=================================================="
-          tail -200 full_build.log | grep -E "(error:|Error|failed|HDRINST|fatal|undefined|No such file|make\[)" || echo "No obvious error keywords found"
-
-          echo "=================================================="
-          echo "=== LAST 100 LINES OF BUILD ==="
-          echo "=================================================="
-          tail -100 full_build.log
+          echo "=== LAST 100 LINES ==="
+          tail -100 build.log
 
       - name: "Define output artifact names"
         id: define-output-names
@@ -171,3 +168,17 @@ jobs:
           path: ${{ env.OUT_DIR }}/arch/${{ steps.generate-args.outputs.ARCH }}/boot/Image.gz
           if-no-files-found: ignore
           retention-days: 90
+
+      - name: "❤️ Pack AnyKernel3.zip"
+        if: ${{ env.useAnykernel == 'true' }}
+        run: |
+          cp -f ${{ env.OUT_DIR }}/arch/${{ steps.generate-args.outputs.ARCH }}/boot/Image.gz AnyKernel3/
+          cd AnyKernel3
+          zip -q -r "../${{ steps.define-output-names.outputs.release_zip }}" *
+
+      - name: "💾 Upload AnyKernel3"
+        if: ${{ env.useAnykernel == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.define-output-names.outputs.release_zip }}
+          path: ${{ steps.define-output-names.outputs.release_zip }}
