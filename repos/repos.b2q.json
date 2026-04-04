@@ -1,0 +1,47 @@
+[
+  {
+    "kernelSource": {
+      "name": "android_kernel_samsung_sm8350",
+      "repo": "https://github.com/morosakubek2/flip_3_android_kernel_samsung_sm8350",
+      "branch": "Flip3-Android16",
+      "device": "b2q",
+      "defconfig": "b2q_defconfig"
+    },
+    "withKernelSU": false,
+    "withSUSFS": false,
+    "withLXC": false,
+    "toolchains": [
+      {
+        "repo": "https://github.com/kdrag0n/proton-clang.git",
+        "branch": "master",
+        "name": "proton-clang",
+        "binPath": ["bin"]
+      }
+    ],
+    "params": {
+      "ARCH": "arm64",
+      "CC": "clang",
+      "externalCommand": {
+        "CROSS_COMPILE": "",
+        "CROSS_COMPILE_ARM32": "",
+        "CLANG_TRIPLE": "aarch64-linux-gnu-",
+        "CONFIG_BUILD_ARM64_DT_OVERLAY": "y",
+        "LD": "ld.lld",
+        "AR": "llvm-ar",
+        "NM": "llvm-nm",
+        "OBJCOPY": "llvm-objcopy",
+        "OBJDUMP": "llvm-objdump",
+        "READELF": "llvm-readelf",
+        "STRIP": "llvm-strip",
+        "LLVM": "1",
+        "LLVM_IAS": "1"
+      }
+    },
+    "AnyKernel3": {
+      "use": true,
+      "release": true,
+      "repo": "https://github.com/morosakubek2/AnyKernel3",
+      "branch": "b2q"
+    }
+  }
+]
