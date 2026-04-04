@@ -80,6 +80,28 @@ jobs:
           KERNEL_GIT_REF=$(git -C ${KERNEL_NAME} rev-parse --short HEAD)
           echo "KERNEL_GIT_REF=${KERNEL_GIT_REF}" >> ${GITHUB_OUTPUT}
 
+      - name: "🔧 Fix missing linux/types.h in uapi headers"
+        working-directory: ${{ env.KERNEL_NAME }}
+        run: |
+          echo "=== Scanning uapi headers for missing types.h ==="
+          
+          # Znajdź wszystkie headery które używają __u8/__s16/etc ale nie mają types.h
+          grep -rl '\b__u8\b\|\b__u16\b\|\b__u32\b\|\b__u64\b\|\b__s8\b\|\b__s16\b\|\b__s32\b\|\b__s64\b\|\b__le16\b\|\b__le32\b\|\b__be16\b\|\b__be32\b' \
+            include/uapi/ include/linux/ 2>/dev/null | while read FILE; do
+            
+            if ! grep -q "linux/types.h" "$FILE"; then
+              # Wstaw po include guard (#define XXXX_H) lub na początku
+              if grep -q "^#define.*_H\b" "$FILE"; then
+                sed -i '/^#define.*_H\b/a #include <linux/types.h>' "$FILE"
+              else
+                sed -i '1s/^/#include <linux\/types.h>\n/' "$FILE"
+              fi
+              echo "✅ Patched: $FILE"
+            fi
+          done
+          
+          echo "=== Done patching ==="
+
       - name: "💫 Get toolchain"
         env:
           toolchains: "${{ toJSON(matrix.repos.toolchains) }}"
