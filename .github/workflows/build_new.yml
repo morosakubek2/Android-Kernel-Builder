@@ -32,8 +32,7 @@ jobs:
   Build-Kernel:
     name: "🐎 Build kernel"
     runs-on: ubuntu-22.04
-    needs:
-      - Set-repos
+    needs: Set-repos
     strategy:
       max-parallel: 8
       fail-fast: false
@@ -47,7 +46,6 @@ jobs:
       KERNEL_REPO: ${{ matrix.repos.kernelSource.repo }}
       KERNEL_BRANCH: ${{ matrix.repos.kernelSource.branch }}
       KERNEL_DEVICE: ${{ matrix.repos.kernelSource.device }}
-
       DEFCONFIG_NAME: ${{ matrix.repos.kernelSource.defconfig }}
 
       withKernelSU: ${{ matrix.repos.withKernelSU }}
@@ -104,16 +102,7 @@ jobs:
           ARCH=$(echo ${params} | jq -r ".ARCH")
           CC=$(echo ${params} | jq -r ".CC")
 
-          args="-j$(nproc --all)"
-          if [ -n "${{ env.OUT_DIR }}" ]; then
-            mkdir -p ${{ env.OUT_DIR }} && args="${args} O=${{ env.OUT_DIR }}"
-          fi
-          if [ -n "${ARCH}" ]; then
-            args="${args} ARCH=${ARCH}"
-          fi
-          if [ -n "${CC}" ]; then
-            args="${args} CC=${CC}"
-          fi
+          args="-j$(nproc --all) O=${{ env.OUT_DIR }} ARCH=${ARCH} CC=${CC}"
           while read -r externalCommand; do
             key=$(echo "${externalCommand}" | cut -d= -f1)
             value=$(echo "${externalCommand}" | cut -d= -f2)
@@ -133,7 +122,6 @@ jobs:
           ld.lld --version
           echo "PATH: $PATH"
           ls -l ${{ env.WORKSPACE }}/gonon-clang/bin/ | grep -E 'clang|ld|llvm' | head -20 || true
-          echo "══════════════════════════════════════════════════════════════"
 
       - name: "🛠️ Fix Camera/Techpack HDRINST errors"
         working-directory: ${{ env.KERNEL_NAME }}
@@ -143,7 +131,7 @@ jobs:
           scripts/config --file out/.config -d CONFIG_CAM_SS || true
           scripts/config --file out/.config -d CONFIG_CAMERA_BOKEH || true
           scripts/config --file out/.config -d CONFIG_CAMERA_SAMSUNG || true
-          make ${{ env.args }} ${{ env.DEFCONFIG_NAME }}
+          make ${{ steps.generate-args.outputs.args }} ${{ env.DEFCONFIG_NAME }}
 
       - name: "🎶 Build kernel (dtbs + dtbo + Image.gz)"
         working-directory: ${{ env.KERNEL_NAME }}
@@ -159,7 +147,7 @@ jobs:
           echo "→ Building Image.gz..."
           make ${{ env.args }} -j$(nproc) Image.gz 2>&1 | tee build.log
 
-          echo "=== LAST 100 LINES OF BUILD ==="
+          echo "=== LAST 100 LINES ==="
           tail -100 build.log
 
       - name: "Define output artifact names"
@@ -168,32 +156,29 @@ jobs:
           run_number: ${{ github.run_number }}
           KERNEL_GIT_REF: ${{ steps.clone-kernel.outputs.KERNEL_GIT_REF }}
         run: |
-          # Tutaj wklej swój oryginalny kod tego kroku (cały blok z release_name, suffix, itp.)
-          # Jeśli nie masz go zmienionego, możesz zostawić pusty na razie lub wkleić z poprzedniej wersji
-          echo "release_name=[${builddate}.${run_number}] ${KERNEL_DEVICE}" >> ${GITHUB_OUTPUT}
+          echo "release_name=[${{ env.builddate }}.${run_number}] ${KERNEL_DEVICE}" >> ${GITHUB_OUTPUT}
+          echo "image_gz=Image.gz-${KERNEL_DEVICE}-${KERNEL_NAME}-${{ env.builddate }}" >> ${GITHUB_OUTPUT}
+          echo "dtbo_img=dtbo.img-${KERNEL_DEVICE}-${KERNEL_NAME}-${{ env.builddate }}" >> ${GITHUB_OUTPUT}
           echo "release_zip=${KERNEL_DEVICE}-${KERNEL_NAME}.zip" >> ${GITHUB_OUTPUT}
-          echo "release_tag=${builddate}.${run_number}" >> ${GITHUB_OUTPUT}
 
       - name: "💙 Upload Image.gz"
         uses: actions/upload-artifact@v4
         with:
-          name: Image.gz-${{ env.KERNEL_DEVICE }}-${{ env.KERNEL_NAME }}-${{ env.builddate }}
+          name: ${{ steps.define-output-names.outputs.image_gz }}
           path: ${{ env.OUT_DIR }}/arch/${{ steps.generate-args.outputs.ARCH }}/boot/Image.gz
           if-no-files-found: ignore
           retention-days: 90
 
       - name: "❤️ Pack AnyKernel3.zip"
         if: ${{ env.useAnykernel == 'true' }}
-        env:
-          arch: ${{ steps.generate-args.outputs.ARCH }}
         run: |
-          cp -f ${{ env.OUT_DIR }}/arch/${{ env.arch }}/boot/Image.gz AnyKernel3/
+          cp -f ${{ env.OUT_DIR }}/arch/${{ steps.generate-args.outputs.ARCH }}/boot/Image.gz AnyKernel3/
           cd AnyKernel3
-          zip -q -r "../${KERNEL_DEVICE}-${KERNEL_NAME}.zip" *
+          zip -q -r "../${{ steps.define-output-names.outputs.release_zip }}" *
 
       - name: "💾 Upload AnyKernel3"
         if: ${{ env.useAnykernel == 'true' }}
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.KERNEL_DEVICE }}-${{ env.KERNEL_NAME }}
-          path: ${{ KERNEL_DEVICE }}-${{ env.KERNEL_NAME }}.zip
+          name: ${{ steps.define-output-names.outputs.release_zip }}
+          path: ${{ steps.define-output-names.outputs.release_zip }}
