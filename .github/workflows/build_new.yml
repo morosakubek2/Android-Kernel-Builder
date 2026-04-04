@@ -80,7 +80,7 @@ jobs:
           KERNEL_GIT_REF=$(git -C ${KERNEL_NAME} rev-parse --short HEAD)
           echo "KERNEL_GIT_REF=${KERNEL_GIT_REF}" >> ${GITHUB_OUTPUT}
 
-     - name: "🔧 Fix missing linux/types.h in uapi headers"
+      - name: "🔧 Fix missing linux/types.h in uapi headers"
         working-directory: ${{ env.KERNEL_NAME }}
         run: |
           echo "=== Scanning uapi headers for missing types.h ==="
@@ -104,25 +104,6 @@ jobs:
           done
 
           echo "=== Done ==="
-
-      - name: "💫 Get toolchain"
-        env:
-          toolchains: "${{ toJSON(matrix.repos.toolchains) }}"
-        run: |
-          for ((i=0;i<$(echo ${toolchains} | jq 'length');i++)); do
-            name=$(echo ${toolchains} | jq -r ".[${i}].name")
-            url=$(echo ${toolchains} | jq -r ".[${i}].url")
-
-            echo "Downloading ${name} from ${url}..."
-            mkdir -p ${name}
-            wget -q --show-progress "${url}" -O toolchain.tar.gz
-            tar -xzf toolchain.tar.gz -C ${name}
-            rm toolchain.tar.gz
-
-            jq -r ".[${i}].binPath[] | tostring" <<< "${toolchains}" | while read -r bin_path; do
-              echo "${WORKSPACE}/${name}/${bin_path}" >> ${GITHUB_PATH}
-            done
-          done
 
       - name: "😎 Set args"
         id: generate-args
