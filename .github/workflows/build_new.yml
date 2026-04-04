@@ -86,9 +86,14 @@ jobs:
         run: |
           for ((i=0;i<$(echo ${toolchains} | jq 'length');i++)); do
             name=$(echo ${toolchains} | jq -r ".[${i}].name")
-            repo=$(echo ${toolchains} | jq -r ".[${i}].repo")
-            branch=$(echo ${toolchains} | jq -r ".[${i}].branch")
-            git clone --depth=1 --branch ${branch} ${repo} ${name}
+            url=$(echo ${toolchains} | jq -r ".[${i}].url")
+
+            echo "Downloading ${name} from ${url}..."
+            mkdir -p ${name}
+            wget -q --show-progress "${url}" -O toolchain.tar.gz
+            tar -xzf toolchain.tar.gz -C ${name}
+            rm toolchain.tar.gz
+
             jq -r ".[${i}].binPath[] | tostring" <<< "${toolchains}" | while read -r bin_path; do
               echo "${WORKSPACE}/${name}/${bin_path}" >> ${GITHUB_PATH}
             done
@@ -127,9 +132,6 @@ jobs:
         env:
           args: ${{ steps.generate-args.outputs.args }}
         run: |
-          CLANG_BIN=$(dirname $(which clang))
-          echo "Using clang from: ${CLANG_BIN}"
-
           echo "→ Running defconfig..."
           make ${{ env.args }} ${{ env.DEFCONFIG_NAME }} 2>&1 | tee defconfig.log
 
