@@ -1,5 +1,4 @@
 name: "Build kernels"
-
 env:
   OUT_DIR: "${{ github.workspace }}/out"
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -21,13 +20,13 @@ jobs:
       - name: "😆 Generate Matrix"
         id: generate-matrix
         run: |
-          echo "repos<<EOF" >> ${GITHUB_OUTPUT}
-          jq -s '[.[][]]' repos/repos*.json >> ${GITHUB_OUTPUT}
-          echo "EOF" >> ${GITHUB_OUTPUT}
+          echo "repos<<EOF" >> $GITHUB_OUTPUT
+          jq -s '[.[][]]' repos/repos*.json >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
       - name: "⏰ Set builddate"
         id: generate-builddate
-        run: echo "builddate=$(date +'%Y%m%d')" >> ${GITHUB_OUTPUT}
+        run: echo "builddate=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
 
   Build-Kernel:
     name: "🐎 Build kernel"
@@ -41,13 +40,11 @@ jobs:
     env:
       WORKSPACE: ${{ github.workspace }}
       builddate: "${{ needs.Set-repos.outputs.builddate }}"
-
       KERNEL_NAME: ${{ matrix.repos.kernelSource.name }}
       KERNEL_REPO: ${{ matrix.repos.kernelSource.repo }}
       KERNEL_BRANCH: ${{ matrix.repos.kernelSource.branch }}
       KERNEL_DEVICE: ${{ matrix.repos.kernelSource.device }}
       DEFCONFIG_NAME: ${{ matrix.repos.kernelSource.defconfig }}
-
       withKernelSU: ${{ matrix.repos.withKernelSU }}
       withSUSFS: ${{ matrix.repos.withSUSFS }}
       withLXC: ${{ matrix.repos.withLXC }}
@@ -69,69 +66,80 @@ jobs:
         env:
           params: "${{ toJSON(matrix.repos.AnyKernel3) }}"
         run: |
-          ANYKERNEL_REPO=$(echo ${params} | jq -r ".repo")
-          ANYKERNEL_BRANCH=$(echo ${params} | jq -r ".branch")
-          git clone --recursive --depth=1 -j $(nproc) --branch ${ANYKERNEL_BRANCH} ${ANYKERNEL_REPO} AnyKernel3
+          ANYKERNEL_REPO=$(echo "${params}" | jq -r ".repo")
+          ANYKERNEL_BRANCH=$(echo "${params}" | jq -r ".branch")
+          git clone --recursive --depth=1 -j $(nproc) --branch "${ANYKERNEL_BRANCH}" "${ANYKERNEL_REPO}" AnyKernel3
 
       - name: "🌟 Clone kernel source"
         id: clone-kernel
         run: |
-          git clone --recursive --depth=1 -j $(nproc) --branch ${KERNEL_BRANCH} ${KERNEL_REPO} ${KERNEL_NAME}
-          KERNEL_GIT_REF=$(git -C ${KERNEL_NAME} rev-parse --short HEAD)
-          echo "KERNEL_GIT_REF=${KERNEL_GIT_REF}" >> ${GITHUB_OUTPUT}
+          git clone --recursive --depth=1 -j $(nproc) --branch "${KERNEL_BRANCH}" "${KERNEL_REPO}" "${KERNEL_NAME}"
+          KERNEL_GIT_REF=$(git -C "${KERNEL_NAME}" rev-parse --short HEAD)
+          echo "KERNEL_GIT_REF=${KERNEL_GIT_REF}" >> $GITHUB_OUTPUT
 
-      - name: "🔧 Fix missing linux/types.h in uapi headers"
+      - name: "🧹 Full Clean"
         working-directory: ${{ env.KERNEL_NAME }}
         run: |
-          echo "=== Scanning ONLY include/uapi/ ==="
+          echo "Performing full clean before build..."
+          make mrproper 2>/dev/null || true
+          rm -rf "${{ env.OUT_DIR }}" 2>/dev/null || true
+          echo "Clean completed."
 
-          find include/uapi/ -name "*.h" | while read FILE; do
+      - name: "💫 Setup Clang Toolchain"
+        env:
+          toolchains: "${{ toJSON(matrix.repos.toolchains) }}"
+        run: |
+          TOOLCHAIN_COUNT=$(echo "${toolchains}" | jq 'length')
+          for ((i=0; i<TOOLCHAIN_COUNT; i++)); do
+            name=$(echo "${toolchains}" | jq -r ".[$i].name")
+            url=$(echo "${toolchains}" | jq -r ".[$i].url // empty")
+            repo=$(echo "${toolchains}" | jq -r ".[$i].repo // empty")
+            branch=$(echo "${toolchains}" | jq -r ".[$i].branch // empty")
 
-            # Pomiń wszelkie pliki types.h
-            [[ "$FILE" == *types.h ]] && continue
-
-            # Sprawdź czy używa typów kernel ABI
-            if grep -qE '\b(__u8|__u16|__u32|__u64|__s8|__s16|__s32|__s64|__le16|__le32|__le64|__be16|__be32|__be64)\b' "$FILE"; then
-              if ! grep -q "linux/types.h" "$FILE"; then
-                # Wstaw zaraz po include guardzie (#define ..._H)
-                if grep -qE '^#define [A-Z_]+_H(_.*)?$' "$FILE"; then
-                  sed -i '/^#define [A-Z_]*_H/a #include <linux/types.h>' "$FILE"
-                else
-                  sed -i '1s/^/#include <linux\/types.h>\n/' "$FILE"
-                fi
-                echo "✅ Patched: $FILE"
-              fi
+            if [[ -n "$url" ]]; then
+              echo "Downloading $name from URL..."
+              wget -q "$url" -O "toolchain.tar.gz"
+              mkdir -p "${WORKSPACE}/${name}"
+              tar -xzf toolchain.tar.gz -C "${WORKSPACE}/${name}" --strip-components=1 2>/dev/null || \
+              tar -xzf toolchain.tar.gz -C "${WORKSPACE}/${name}"
+              rm -f toolchain.tar.gz
+            elif [[ -n "$repo" && -n "$branch" ]]; then
+              echo "Cloning $name from Git..."
+              git clone --depth=1 --branch "$branch" "$repo" "${WORKSPACE}/${name}"
+            else
+              echo "Error: No URL or repo/branch defined for $name"
+              exit 1
             fi
+
+            echo "Adding $name/bin to PATH..."
+            echo "${WORKSPACE}/${name}/bin" >> $GITHUB_PATH
           done
 
-          echo "=== Done ==="
+      - name: "🔬 Toolchain Diagnostics"
+        run: |
+          echo "Clang version:"
+          which clang
+          clang --version | head -5
+          echo "ld.lld version:"
+          ld.lld --version
+
       - name: "😎 Set args"
         id: generate-args
         env:
           params: "${{ toJSON(matrix.repos.params) }}"
         run: |
-          ARCH=$(echo ${params} | jq -r ".ARCH")
-          CC=$(echo ${params} | jq -r ".CC")
+          ARCH=$(echo "${params}" | jq -r ".ARCH")
+          CC=$(echo "${params}" | jq -r ".CC")
 
           args="-j$(nproc --all) O=${{ env.OUT_DIR }} ARCH=${ARCH} CC=${CC}"
           while read -r externalCommand; do
             key=$(echo "${externalCommand}" | cut -d= -f1)
-            value=$(echo "${externalCommand}" | cut -d= -f2)
+            value=$(echo "${externalCommand}" | cut -d= -f2-)
             args="${args} ${key}=${value}"
           done < <(jq -r '.externalCommand | to_entries[] | "\(.key)=\(.value)"' <<< "${params}")
 
-          echo "args=${args}" >> ${GITHUB_OUTPUT}
-          echo "ARCH=${ARCH}" >> ${GITHUB_OUTPUT}
-
-      - name: "🔬 Toolchain Diagnostics"
-        run: |
-          echo "=== which clang ==="
-          which clang
-          clang --version
-          echo "=== which as ==="
-          which as
-          echo "=== PATH ==="
-          echo $PATH
+          echo "args=${args}" >> $GITHUB_OUTPUT
+          echo "ARCH=${ARCH}" >> $GITHUB_OUTPUT
 
       - name: "🎶 Build kernel"
         working-directory: ${{ env.KERNEL_NAME }}
@@ -139,16 +147,19 @@ jobs:
           args: ${{ steps.generate-args.outputs.args }}
         run: |
           echo "→ Running defconfig..."
-          make ${{ env.args }} ${{ env.DEFCONFIG_NAME }} 2>&1 | tee defconfig.log
+          make ${{ env.args }} ${{ env.DEFCONFIG_NAME }} V=1 2>&1 | tee defconfig.log
 
           echo "→ Starting full build..."
-          make ${{ env.args }} 2>&1 | tee build.log
+          make ${{ env.args }} V=1 2>&1 | tee build.log
 
-          echo "=== ERRORS ==="
-          grep -n "error:\|unrecognized option\|fatal error\|undefined reference" build.log | head -50 || true
-
-          echo "=== LAST 50 LINES ==="
-          tail -50 build.log
+          echo "=== CHECKING FOR ERRORS ==="
+          if grep -q "error:" build.log; then
+            grep -n "error:\|fatal\|undefined" build.log | head -30
+            echo "Build failed. Check logs above."
+            exit 1
+          else
+            echo "Build completed successfully!"
+          fi
 
       - name: "Define output artifact names"
         id: define-output-names
@@ -156,10 +167,10 @@ jobs:
           run_number: ${{ github.run_number }}
           KERNEL_GIT_REF: ${{ steps.clone-kernel.outputs.KERNEL_GIT_REF }}
         run: |
-          echo "release_name=[${{ env.builddate }}.${run_number}] ${KERNEL_DEVICE}" >> ${GITHUB_OUTPUT}
-          echo "image_gz=Image.gz-${KERNEL_DEVICE}-${KERNEL_NAME}-${{ env.builddate }}" >> ${GITHUB_OUTPUT}
-          echo "dtbo_img=dtbo.img-${KERNEL_DEVICE}-${KERNEL_NAME}-${{ env.builddate }}" >> ${GITHUB_OUTPUT}
-          echo "release_zip=${KERNEL_DEVICE}-${KERNEL_NAME}.zip" >> ${GITHUB_OUTPUT}
+          echo "release_name=[${{ env.builddate }}.${run_number}] ${KERNEL_DEVICE}" >> $GITHUB_OUTPUT
+          echo "image_gz=Image.gz-${KERNEL_DEVICE}-${KERNEL_NAME}-${{ env.builddate }}" >> $GITHUB_OUTPUT
+          echo "dtbo_img=dtbo.img-${KERNEL_DEVICE}-${KERNEL_NAME}-${{ env.builddate }}" >> $GITHUB_OUTPUT
+          echo "release_zip=${KERNEL_DEVICE}-${KERNEL_NAME}.zip" >> $GITHUB_OUTPUT
 
       - name: "💙 Upload Image.gz"
         uses: actions/upload-artifact@v4
@@ -168,17 +179,3 @@ jobs:
           path: ${{ env.OUT_DIR }}/arch/${{ steps.generate-args.outputs.ARCH }}/boot/Image.gz
           if-no-files-found: ignore
           retention-days: 90
-
-      - name: "❤️ Pack AnyKernel3.zip"
-        if: ${{ env.useAnykernel == 'true' }}
-        run: |
-          cp -f ${{ env.OUT_DIR }}/arch/${{ steps.generate-args.outputs.ARCH }}/boot/Image.gz AnyKernel3/
-          cd AnyKernel3
-          zip -q -r "../${{ steps.define-output-names.outputs.release_zip }}" *
-
-      - name: "💾 Upload AnyKernel3"
-        if: ${{ env.useAnykernel == 'true' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ steps.define-output-names.outputs.release_zip }}
-          path: ${{ steps.define-output-names.outputs.release_zip }}
