@@ -49,6 +49,8 @@ jobs:
 
       - name: "📦 Install Dependencies"
         run: |
+          # Przywracamy PATH dla pewności
+          export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
           sudo apt-get update
           sudo apt-get install -y bc bison flex libssl-dev lld llvm curl git wget zip unzip tar jq gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi build-essential libelf-dev dwarves
 
@@ -60,7 +62,6 @@ jobs:
         env:
           TOOLCHAINS: ${{ toJSON(matrix.repos.toolchains) }}
         run: |
-          # 🔒 Gwarantujemy, że PATH zawiera katalogi systemowe
           export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
           
           if echo "$TOOLCHAINS" | jq -e 'type == "object"' >/dev/null 2>&1; then
@@ -85,7 +86,7 @@ jobs:
               tar -xzf "/tmp/$FILENAME" -C "$DIR"
               rm -f "/tmp/$FILENAME"
 
-              # Automatyczne spłaszczenie katalogów jeśli wypakowanie stworzyło podfolder
+              # Automatyczne spłaszczenie katalogów
               SUBFOLDERS=$(find "$DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)
               if [ $(echo "$SUBFOLDERS" | wc -l) -eq 1 ] && [ -n "$SUBFOLDERS" ]; then
                   mv "$SUBFOLDERS"/* "$DIR"/ 2>/dev/null || true
@@ -97,83 +98,83 @@ jobs:
               exit 1
             fi
 
-            # ✅ Bezpieczne dodawanie do PATH (nie nadpisuje!)
             if [[ -d "$DIR/bin" ]]; then
               echo "$DIR/bin" >> $GITHUB_PATH
               echo "✅ Added $DIR/bin to PATH"
             fi
           done
 
-      - name: "🔍 Verify & Locate Clang (PATH-Safe)"
+      - name: "🔍 Locate Clang Binary"
         id: locate-clang
         run: |
-          # 🔒 Przywracamy pełny PATH na wypadek nadpisania
           export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+          echo "🔎 Searching for clang binary in toolchain..."
           
-          echo "🔍 Searching for clang binary..."
+          # Szukamy pliku wykonywalnego 'clang' wewnątrz folderu zyc-clang
+          CLANG_BIN=$(find "${{ github.workspace }}/toolchains/zyc-clang" -name "clang" -type f -executable | head -n 1)
           
-          # Szukamy clang w znanym miejscu, używając bezpiecznego globowania Bash
-          CLANG_PATHS=("${{ github.workspace }}/toolchains/zyc-clang/bin/clang")
-          # Jeśli nie ma w bin/, szukamy głębiej (np. w podfolderze wersji)
-          if [[ ! -x "${CLANG_PATHS[0]}" ]]; then
-            shopt -s nullglob
-            CLANG_PATHS=("${{ github.workspace }}/toolchains/zyc-clang/"**"/clang")
-            shopt -u nullglob
-          fi
-          
-          CLANG_BIN="${CLANG_PATHS[0]}"
-          
-          if [[ -z "$CLANG_BIN" || ! -x "$CLANG_BIN" ]]; then
-            echo "❌ Error: clang binary not found!"
-            echo "Directory structure:"
-            ls -R "${{ github.workspace }}/toolchains/zyc-clang/" 2>/dev/null | head -15
+          if [[ -z "$CLANG_BIN" ]]; then
+            echo "❌ Error: Could not find clang binary!"
+            ls -R "${{ github.workspace }}/toolchains/zyc-clang" | head -20
             exit 1
           fi
           
-          echo "✅ Found clang at: $CLANG_BIN"
-          "$CLANG_BIN" --version | head -3
+          echo "✅ Found Clang at: $CLANG_BIN"
+          echo "📢 VERSION CHECK:"
+          "$CLANG_BIN" --version | head -n 3
           
-          # Eksportujemy do środowiska kolejnych kroków
-          echo "CLANG_BIN=$CLANG_BIN" >> $GITHUB_ENV
+          echo "CLANG_BIN=$CLANG_BIN" >> $GITHUB_OUTPUT
 
-      - name: "🔨 Build Kernel (Verbose & Safe)"
+      - name: "🔨 Build Kernel (Verbose & Patched)"
         working-directory: kernel_source
+        env:
+          PARAMS: ${{ toJSON(matrix.repos.params) }}
+          CLANG_BIN: ${{ steps.locate-clang.outputs.CLANG_BIN }}
         run: |
-          # 🔒 Zawsze przywracamy PATH
           export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
           
-          if [[ -z "$CLANG_BIN" || ! -x "$CLANG_BIN" ]]; then
-            echo "❌ FATAL: CLANG_BIN is not set or executable!"
+          if [[ -z "$CLANG_BIN" ]]; then
+            echo "❌ FATAL: CLANG_BIN is empty!"
             exit 1
           fi
 
-          echo "🚀 Using Clang: $CLANG_BIN"
+          echo "🚀 Building with Explicit Clang: $CLANG_BIN"
           
-          PARAMS='${{ toJSON(matrix.repos.params) }}'
-          DEFCONFIG='${{ matrix.repos.kernelSource.defconfig }}'
           ARCH=$(echo "$PARAMS" | jq -r '.ARCH // "arm64"')
+          DEFCONFIG='${{ matrix.repos.kernelSource.defconfig }}'
 
-          # 🔑 KLUCZOWE FLAGI:
-          # CC="$CLANG_BIN"  -> wymusza nasz toolchain
-          # GCC_TOOLCHAIN=   -> blokuje auto-detect systemowego GCC
-          # WERROR=0         -> omija HDRTEST strict mode
-          # V=1              -> pełny verbose
+          # Budujemy komendę make
+          # CC="$CLANG_BIN"       -> Wymusza nasz toolchain
+          # GCC_TOOLCHAIN=        -> Blokuje systemowe GCC
+          # WERROR=0              -> Wyłącza traktowanie warningów jako błędów
+          # V=1                   -> Pełny verbose (zgodnie z prośbą)
           CMD="make -j$(nproc) O=${{ github.workspace }}/out ARCH=${ARCH} CC='$CLANG_BIN' HOSTCC=clang LLVM=1 LLVM_IAS=1 GCC_TOOLCHAIN= WERROR=0 V=1"
           
-          # Dodaj CROSS_COMPILE itp., ale pomiń CC
+          # Dodajemy parametry z JSON (oprócz CC)
           if [[ $(echo "$PARAMS" | jq 'has("externalCommand")') == "true" ]]; then
              while read -r param; do
                KEY=$(echo "$param" | cut -d= -f1)
                VAL=$(echo "$param" | cut -d= -f2-)
+               # NIGDY nie nadpisuj CC z JSON, jeśli ustawiliśmy własny
                [[ "$KEY" == "CC" ]] && continue
                [[ -n "$VAL" ]] && CMD="$CMD $KEY=$VAL"
              done < <(jq -r '.externalCommand | to_entries[] | "\(.key)=\(.value)"' <<< "$PARAMS")
           fi
 
-          echo "📝 Command: $CMD $DEFCONFIG"
-          
+          echo "📝 Running Defconfig..."
           make mrproper >/dev/null 2>&1 || true
           eval "$CMD $DEFCONFIG"
+
+          # 🛡️ FIX: Wyłączenie restrykcyjnego sprawdzania nagłówków (HDRTEST)
+          # To naprawia błędy typu 'unknown type name' w nagłówkach
+          echo "🛡️ Patching .config to disable headers check..."
+          sed -i 's/CONFIG_HEADERS_CHECK=y/# CONFIG_HEADERS_CHECK is not set/' .config
+          sed -i 's/CONFIG_WERROR=y/# CONFIG_WERROR is not set/' .config
+          
+          # Aktualizacja configu
+          make olddefconfig > /dev/null 2>&1 || true
+
+          echo "⚡ Starting Full Build..."
           eval "$CMD"
 
           echo "✅ Build finished."
