@@ -52,11 +52,11 @@ jobs:
         run: |
           git clone --recursive --depth=1 -j $(nproc) --branch "${KERNEL_BRANCH}" "${KERNEL_REPO}" kernel_source
 
-      - name: "🔧 Download & Setup Toolchain (zyc-clang)"
+      - name: "🔧 Download & Setup Toolchain"
         env:
           TOOLCHAINS: ${{ toJSON(matrix.repos.toolchains) }}
         run: |
-          echo "Parsing toolchains configuration..."
+          echo "Parsing toolchains..."
           # Sprawdź czy to tablica czy obiekt
           if echo "$TOOLCHAINS" | jq -e 'type == "object"' >/dev/null 2>&1; then
              TOOLCHAINS=$(echo "[$TOOLCHAINS]" | jq '.')
@@ -77,7 +77,7 @@ jobs:
               echo "Downloading from URL: $URL"
               FILENAME=$(basename "$URL")
               wget -q "$URL" -O "/tmp/$FILENAME"
-              # Rozpakuj, usuwając główny folder jeśli istnieje (strip-components=1)
+              # Rozpakuj, usuwając główny folder jeśli istnieje
               tar -xzf "/tmp/$FILENAME" -C "$DIR" --strip-components=1 2>/dev/null || \
               tar -xzf "/tmp/$FILENAME" -C "$DIR"
               rm -f "/tmp/$FILENAME"
@@ -107,18 +107,15 @@ jobs:
         working-directory: kernel_source
         env:
           PARAMS: ${{ toJSON(matrix.repos.params) }}
-          DEFCONFIG: ${{ matrix.repos.kernelSource.defconfig }}
         run: |
           echo "Starting build with custom toolchain..."
           
+          # Pobierz parametry
           ARCH=$(echo "$PARAMS" | jq -r '.ARCH // "arm64"')
           CC=$(echo "$PARAMS" | jq -r '.CC // "clang"')
           
-          # 🔑 KLUCZOWE: 
-          # GCC_TOOLCHAIN=       -> blokuje --gcc-toolchain=/usr
-          # WERROR=0             -> wyłącza HDRTEST strict mode
-          # KCFLAGS="-Wno-error" -> dodatkowa ochrona przed warningami -> error
-          CMD="make -j$(nproc) O=${{ github.workspace }}/out ARCH=${ARCH} CC=${CC} LLVM=1 LLVM_IAS=1 GCC_TOOLCHAIN= WERROR=0 KCFLAGS=\"-Wno-error\""
+          # 🔑 KLUCZOWE: GCC_TOOLCHAIN= wyłącza systemowy GCC, WERROR=0 omija błędy HDRTEST
+          CMD="make -j$(nproc) O=${{ github.workspace }}/out ARCH=${ARCH} CC=${CC} LLVM=1 LLVM_IAS=1 GCC_TOOLCHAIN= WERROR=0"
           
           if [[ $(echo "$PARAMS" | jq 'has("externalCommand")') == "true" ]]; then
              while read -r param; do
@@ -138,3 +135,4 @@ jobs:
           eval "$CMD"
           
           echo "Build finished."
+          ls -l "${{ github.workspace }}/out/arch/${ARCH}/boot/Image.gz" 2>/dev/null || echo "Image.gz not found"
