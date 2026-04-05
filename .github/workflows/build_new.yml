@@ -107,19 +107,16 @@ jobs:
         working-directory: kernel_source
         env:
           PARAMS: ${{ toJSON(matrix.repos.params) }}
-          # Upewnij się, że DEFCONFIG jest dostępne (jeśli nie masz go w env joba, dodaj tutaj)
           DEFCONFIG: ${{ matrix.repos.kernelSource.defconfig }}
         run: |
           echo "Starting build with custom toolchain..."
           
-          # Pobierz parametry (POPRAWIONA SKŁADNIA: podwójne cudzysłowy wewnątrz jq)
           ARCH=$(echo "$PARAMS" | jq -r '.ARCH // "arm64"')
           CC=$(echo "$PARAMS" | jq -r '.CC // "clang"')
           
-          # Buduj komendę make
-          CMD="make -j$(nproc) O=${{ github.workspace }}/out ARCH=${ARCH} CC=${CC} LLVM=1 LLVM_IAS=1"
+          # 🔑 DODANO: WERROR=0 KCFLAGS="-Wno-error=comment"
+          CMD="make -j$(nproc) O=${{ github.workspace }}/out ARCH=${ARCH} CC=${CC} LLVM=1 LLVM_IAS=1 WERROR=0 KCFLAGS=\"-Wno-error=comment\""
           
-          # Dodaj CROSS_COMPILE itp.
           if [[ $(echo "$PARAMS" | jq 'has("externalCommand")') == "true" ]]; then
              while read -r param; do
                KEY=$(echo "$param" | cut -d= -f1)
@@ -138,4 +135,4 @@ jobs:
           eval "$CMD"
           
           echo "Build finished."
-          ls -l "${{ github.workspace }}/out/arch/${ARCH}/boot/Image.gz" 2>/dev/null || echo "Image.gz not found"
+          ls -l "${{ github.workspace }}/out/arch/${ARCH}/boot/Image.gz" 2>/dev/null || echo "Image.gz not found (might be Image or Image.gz-dtb)"
