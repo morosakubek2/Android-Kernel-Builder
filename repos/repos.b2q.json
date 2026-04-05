@@ -33,7 +33,8 @@
         "READELF": "llvm-readelf",
         "STRIP": "llvm-strip",
         "LLVM": "1",
-        "LLVM_IAS": "1"
+        "LLVM_IAS": "1",
+        "GCC_TOOLCHAIN": ""
       }
     },
     "AnyKernel3": {
