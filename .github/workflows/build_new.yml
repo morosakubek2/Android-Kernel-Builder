@@ -49,7 +49,6 @@ jobs:
 
       - name: "📦 Install Dependencies"
         run: |
-          # Przywracamy PATH dla pewności
           export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
           sudo apt-get update
           sudo apt-get install -y bc bison flex libssl-dev lld llvm curl git wget zip unzip tar jq gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi build-essential libelf-dev dwarves
@@ -86,7 +85,6 @@ jobs:
               tar -xzf "/tmp/$FILENAME" -C "$DIR"
               rm -f "/tmp/$FILENAME"
 
-              # Automatyczne spłaszczenie katalogów
               SUBFOLDERS=$(find "$DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)
               if [ $(echo "$SUBFOLDERS" | wc -l) -eq 1 ] && [ -n "$SUBFOLDERS" ]; then
                   mv "$SUBFOLDERS"/* "$DIR"/ 2>/dev/null || true
@@ -108,54 +106,54 @@ jobs:
         id: locate-clang
         run: |
           export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
-          echo "🔎 Searching for clang binary in toolchain..."
+          TOOLCHAIN_DIR="${{ github.workspace }}/toolchains/zyc-clang"
           
-          # Szukamy pliku wykonywalnego 'clang' wewnątrz folderu zyc-clang
-          CLANG_BIN=$(find "${{ github.workspace }}/toolchains/zyc-clang" -name "clang" -type f -executable | head -n 1)
+          echo "🔎 Searching for clang binary..."
+          CLANG_BIN="$TOOLCHAIN_DIR/bin/clang"
           
-          if [[ -z "$CLANG_BIN" ]]; then
-            echo "❌ Error: Could not find clang binary!"
-            ls -R "${{ github.workspace }}/toolchains/zyc-clang" | head -20
+          if [[ ! -x "$CLANG_BIN" ]]; then
+            CLANG_BIN=$(find "$TOOLCHAIN_DIR" -name "clang" -executable 2>/dev/null | head -n 1)
+          fi
+          if [[ ! -x "$CLANG_BIN" ]]; then
+            CLANG_BIN=$(find "$TOOLCHAIN_DIR" -name "clang-[0-9]*" -executable 2>/dev/null | head -n 1)
+          fi
+          
+          if [[ -z "$CLANG_BIN" || ! -x "$CLANG_BIN" ]]; then
+            echo "❌ FATAL: clang binary not found!"
+            ls -la "$TOOLCHAIN_DIR/bin/" 2>/dev/null || echo "(bin dir missing)"
             exit 1
           fi
           
           echo "✅ Found Clang at: $CLANG_BIN"
-          echo "📢 VERSION CHECK:"
           "$CLANG_BIN" --version | head -n 3
-          
           echo "CLANG_BIN=$CLANG_BIN" >> $GITHUB_OUTPUT
 
-      - name: "🔨 Build Kernel (Verbose & Patched)"
+      - name: "🔨 Build Kernel (Verbose & Safe)"
         working-directory: kernel_source
-        env:
-          PARAMS: ${{ toJSON(matrix.repos.params) }}
-          CLANG_BIN: ${{ steps.locate-clang.outputs.CLANG_BIN }}
         run: |
           export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
           
           if [[ -z "$CLANG_BIN" ]]; then
-            echo "❌ FATAL: CLANG_BIN is empty!"
+            CLANG_BIN="${{ steps.locate-clang.outputs.CLANG_BIN }}"
+          fi
+
+          if [[ -z "$CLANG_BIN" || ! -x "$CLANG_BIN" ]]; then
+            echo "❌ FATAL: CLANG_BIN is not set or executable!"
             exit 1
           fi
 
           echo "🚀 Building with Explicit Clang: $CLANG_BIN"
           
-          ARCH=$(echo "$PARAMS" | jq -r '.ARCH // "arm64"')
+          PARAMS='${{ toJSON(matrix.repos.params) }}'
           DEFCONFIG='${{ matrix.repos.kernelSource.defconfig }}'
+          ARCH=$(echo "$PARAMS" | jq -r '.ARCH // "arm64"')
 
-          # Budujemy komendę make
-          # CC="$CLANG_BIN"       -> Wymusza nasz toolchain
-          # GCC_TOOLCHAIN=        -> Blokuje systemowe GCC
-          # WERROR=0              -> Wyłącza traktowanie warningów jako błędów
-          # V=1                   -> Pełny verbose (zgodnie z prośbą)
           CMD="make -j$(nproc) O=${{ github.workspace }}/out ARCH=${ARCH} CC='$CLANG_BIN' HOSTCC=clang LLVM=1 LLVM_IAS=1 GCC_TOOLCHAIN= WERROR=0 V=1"
           
-          # Dodajemy parametry z JSON (oprócz CC)
           if [[ $(echo "$PARAMS" | jq 'has("externalCommand")') == "true" ]]; then
              while read -r param; do
                KEY=$(echo "$param" | cut -d= -f1)
                VAL=$(echo "$param" | cut -d= -f2-)
-               # NIGDY nie nadpisuj CC z JSON, jeśli ustawiliśmy własny
                [[ "$KEY" == "CC" ]] && continue
                [[ -n "$VAL" ]] && CMD="$CMD $KEY=$VAL"
              done < <(jq -r '.externalCommand | to_entries[] | "\(.key)=\(.value)"' <<< "$PARAMS")
@@ -165,17 +163,12 @@ jobs:
           make mrproper >/dev/null 2>&1 || true
           eval "$CMD $DEFCONFIG"
 
-          # 🛡️ FIX: Wyłączenie restrykcyjnego sprawdzania nagłówków (HDRTEST)
-          # To naprawia błędy typu 'unknown type name' w nagłówkach
-          echo "🛡️ Patching .config to disable headers check..."
-          sed -i 's/CONFIG_HEADERS_CHECK=y/# CONFIG_HEADERS_CHECK is not set/' .config
-          sed -i 's/CONFIG_WERROR=y/# CONFIG_WERROR is not set/' .config
-          
-          # Aktualizacja configu
+          sed -i 's/CONFIG_HEADERS_CHECK=y/# CONFIG_HEADERS_CHECK is not set/' .config 2>/dev/null || true
+          sed -i 's/CONFIG_WERROR=y/# CONFIG_WERROR is not set/' .config 2>/dev/null || true
           make olddefconfig > /dev/null 2>&1 || true
 
           echo "⚡ Starting Full Build..."
           eval "$CMD"
 
           echo "✅ Build finished."
-          ls -l "${{ github.workspace }}/out/arch/${ARCH}/boot/Image.gz" 2>/dev/null || echo "⚠️ Image.gz not found"
+          ls -l "${{ github.workspace }}/out/arch/${ARCH}/boot/Image.gz" 2>/dev/null || echo "⚠️ Image.gz not found (check out/arch/${ARCH}/boot/)"
