@@ -72,87 +72,87 @@ jobs:
             NAME=$(echo "$TOOLCHAINS" | jq -r ".[$i].name")
             URL=$(echo "$TOOLCHAINS" | jq -r ".[$i].url // empty")
             
-            echo "Setup toolchain: $NAME"
+            echo "📦 Setup toolchain: $NAME"
             DIR="${{ github.workspace }}/toolchains/$NAME"
             mkdir -p "$DIR"
 
             if [[ -n "$URL" && "$URL" != "null" ]]; then
-              echo "Downloading from URL: $URL"
+              echo "⬇️ Downloading from: $URL"
               FILENAME=$(basename "$URL")
               wget -q "$URL" -O "/tmp/$FILENAME"
-              tar -xzf "/tmp/$FILENAME" -C "$DIR" --strip-components=1 2>/dev/null || \
+              
+              # Wypakuj BEZ --strip-components, aby uniknąć cichych błędów
               tar -xzf "/tmp/$FILENAME" -C "$DIR"
               rm -f "/tmp/$FILENAME"
+
+              # 🛠️ AUTOMATYCZNE NAPRAWIANIE STRUKTURY KATALOGÓW
+              # Jeśli wypakowanie stworzyło dokładnie 1 podkatalog, przenieś jego zawartość wyżej
+              SUBFOLDERS=$(find "$DIR" -mindepth 1 -maxdepth 1 -type d)
+              SUBFOLDER_COUNT=$(echo "$SUBFOLDERS" | wc -l)
+              
+              if [[ $SUBFOLDER_COUNT -eq 1 && -n "$SUBFOLDERS" ]]; then
+                  echo "📂 Przenoszę zawartość z podkatalogu '$(basename $SUBFOLDERS)'..."
+                  mv "$SUBFOLDERS"/* "$DIR"/
+                  mv "$SUBFOLDERS"/.[!.]* "$DIR"/ 2>/dev/null || true
+                  rmdir "$SUBFOLDERS"
+              fi
             else
-              echo "Error: No URL provided for $NAME"
+              echo "❌ Error: No URL provided for $NAME"
               exit 1
             fi
 
             if [[ -d "$DIR/bin" ]]; then
               echo "PATH=$DIR/bin:\$PATH" >> $GITHUB_ENV
-              echo "✅ Added $DIR/bin to PATH"
+              echo "✅ Toolchain ready at: $DIR/bin"
             else
-              echo "⚠️ Warning: bin directory not found in $DIR"
+              echo "⚠️ Warning: bin directory not found!"
+              ls -la "$DIR"
             fi
           done
 
-      - name: "🔍 Verify Toolchain"
-        run: |
-          echo "=== Checking Custom Clang ==="
-          CLANG_PATH="${{ github.workspace }}/toolchains/zyc-clang/bin/clang"
-          if [[ -x "$CLANG_PATH" ]]; then
-            echo "✅ Found: $CLANG_PATH"
-            "$CLANG_PATH" --version | head -3
-          else
-            echo "❌ NOT FOUND at expected path!"
-            exit 1
-          fi
-
-      - name: "🔨 Build Kernel (Verbose & Compiler Check)"
+      - name: "🔨 Build Kernel (Verbose & Robust)"
         working-directory: kernel_source
-        env:
-          PARAMS: ${{ toJSON(matrix.repos.params) }}
-          DEFCONFIG: ${{ matrix.repos.kernelSource.defconfig }}
         run: |
-          echo "🔍 === COMPILER PATH VERIFICATION ==="
-          CLANG_BIN="${{ github.workspace }}/toolchains/zyc-clang/bin/clang"
-
-          if [[ ! -x "$CLANG_BIN" ]]; then
-            echo "❌ FATAL: Custom clang not found at $CLANG_BIN"
+          echo "🔍 === LOCATING CLANG ==="
+          # 🎯 Dynamicznie znajdź plik clang, niezależnie od struktury archiwum
+          CLANG_BIN=$(find "${{ github.workspace }}/toolchains/zyc-clang" -name "clang" -type f -executable | head -1)
+          
+          if [[ -z "$CLANG_BIN" ]]; then
+            echo "❌ FATAL: Nie znaleziono pliku binarnego clang w toolchainie!"
+            find "${{ github.workspace }}/toolchains/zyc-clang" -type f -name "*clang*" | head -10
             exit 1
           fi
-
+          
           echo "✅ Selected Clang: $CLANG_BIN"
           "$CLANG_BIN" --version | head -3
 
-          # Buduj komendę make z jawnym CC i trybem verbose (V=1)
-          CMD="make -j$(nproc) O=${{ github.workspace }}/out ARCH=arm64 CC=\"$CLANG_BIN\" HOSTCC=clang LLVM=1 LLVM_IAS=1 GCC_TOOLCHAIN= WERROR=0 V=1"
+          # Pobierz parametry
+          PARAMS='${{ toJSON(matrix.repos.params) }}'
+          DEFCONFIG='${{ matrix.repos.kernelSource.defconfig }}'
+          ARCH=$(echo "$PARAMS" | jq -r '.ARCH // "arm64"')
 
-          # Dodaj parametry z JSON, ale NIE nadpisuj CC
+          # 🔑 Buduj komendę make
+          # CC=$CLANG_BIN -> wymusza użycie pobranego kompilatora
+          # GCC_TOOLCHAIN= -> blokuje --gcc-toolchain=/usr
+          # WERROR=0 -> omija błędy HDRTEST/implicit-function
+          # V=1 -> pełny verbose
+          CMD="make -j$(nproc) O=${{ github.workspace }}/out ARCH=${ARCH} CC='$CLANG_BIN' HOSTCC=clang LLVM=1 LLVM_IAS=1 GCC_TOOLCHAIN= WERROR=0 V=1"
+          
+          # Dodaj CROSS_COMPILE itp. z JSON
           if [[ $(echo "$PARAMS" | jq 'has("externalCommand")') == "true" ]]; then
              while read -r param; do
                KEY=$(echo "$param" | cut -d= -f1)
                VAL=$(echo "$param" | cut -d= -f2-)
-               if [[ "$KEY" != "CC" && -n "$VAL" ]]; then
-                 CMD="$CMD $KEY=$VAL"
-               fi
+               [[ "$KEY" == "CC" ]] && continue
+               [[ -n "$VAL" ]] && CMD="$CMD $KEY=$VAL"
              done < <(jq -r '.externalCommand | to_entries[] | "\(.key)=\(.value)"' <<< "$PARAMS")
           fi
 
-          echo "🚀 Final Make Command:"
-          echo "$CMD ${DEFCONFIG}"
-          echo "======================="
-
+          echo "🚀 Running: $CMD $DEFCONFIG"
+          
           make mrproper >/dev/null 2>&1 || true
-
-          echo "📝 Running defconfig..."
-          eval "$CMD ${DEFCONFIG}"
-
-          echo "⚡ Starting full build (VERBOSE MODE)..."
-          eval "$CMD" 2>&1 | tee /tmp/build_output.log
+          eval "$CMD $DEFCONFIG"
+          eval "$CMD"
 
           echo "✅ Build finished."
-          echo "🔎 Checking which clang was actually invoked:"
-          grep -m 5 "clang " /tmp/build_output.log | sed 's/^/  /' || echo "  (No clang invocations captured)"
-          
-          ls -l "${{ github.workspace }}/out/arch/arm64/boot/Image.gz" 2>/dev/null || echo "⚠️ Image.gz not found"
+          ls -l "${{ github.workspace }}/out/arch/${ARCH}/boot/Image.gz" 2>/dev/null || echo "⚠️ Image.gz not found (check out/arch/${ARCH}/boot/ for Image, Image.gz, or Image.gz-dtb)"
