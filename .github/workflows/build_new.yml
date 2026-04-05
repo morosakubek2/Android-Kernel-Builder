@@ -1,207 +1,61 @@
-name: "Build Kernel (Safe & Robust)"
-env:
-  OUT_DIR: "${{ github.workspace }}/out"
-
-on:
-  workflow_dispatch:
+name: "Build Kernel (Direct & Clean)"
+on: workflow_dispatch
 
 jobs:
-  Set-repos:
-    name: "🐂 Parse repos.json"
+  build:
+    name: "🐎 Build Kernel"
     runs-on: ubuntu-latest
-    outputs:
-      repos: ${{ steps.generate-matrix.outputs.repos }}
-      builddate: ${{ steps.generate-builddate.outputs.builddate }}
     steps:
       - name: "😄 Checkout"
         uses: actions/checkout@v4
 
-      - name: "😆 Generate Matrix"
-        id: generate-matrix
-        run: |
-          echo "repos<<EOF" >> $GITHUB_OUTPUT
-          # Automatycznie czyścimy spacje z kluczy JSON, aby uniknąć błędów parsowania
-          jq 'walk(if type == "object" then with_entries(.key |= gsub(" "; "") | .value |= (if type == "string" then gsub(" "; "") else . end)) else . end) | [.[][]]' repos/repos.b2q.json >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
-      - name: "⏰ Set builddate"
-        id: generate-builddate
-        run: echo "builddate=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
-
-  Build-Kernel:
-    name: "🐎 Build Kernel"
-    runs-on: ubuntu-latest
-    needs: Set-repos
-    strategy:
-      max-parallel: 4
-      fail-fast: false
-      matrix:
-        repos: ${{ fromJSON(needs.Set-repos.outputs.repos) }}
-    env:
-      KERNEL_NAME: ${{ matrix.repos.kernelSource.name }}
-      KERNEL_REPO: ${{ matrix.repos.kernelSource.repo }}
-      KERNEL_BRANCH: ${{ matrix.repos.kernelSource.branch }}
-      DEFCONFIG: ${{ matrix.repos.kernelSource.defconfig }}
-      DEVICE: ${{ matrix.repos.kernelSource.device }}
-
-    steps:
-      - name: "😄 Checkout Builder"
-        uses: actions/checkout@v4
-        with:
-          path: "builder"
-
       - name: "📦 Install Dependencies"
         run: |
-          # Reset PATH dla bezpieczeństwa
-          export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
           sudo apt-get update
-          sudo apt-get install -y \
-            build-essential bc bison flex libssl-dev libelf-dev dwarves \
-            lld llvm curl git wget zip unzip tar jq \
-            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
-            python3 python3-dev libncurses5-dev zlib1g-dev lz4
+          sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves lld llvm curl git wget zip unzip tar jq build-essential
 
       - name: "🌟 Clone Kernel Source"
         run: |
-          git clone --recursive --depth=1 -j $(nproc) --branch "${KERNEL_BRANCH}" "${KERNEL_REPO}" kernel_source
+          # Bezpieczne usuwanie spacji z JSON przy parsowaniu
+          JSON=$(jq 'walk(if type == "string" then gsub(" "; "") else . end)' repos/repos.b2q.json | jq '.[0]')
+          REPO=$(echo "$JSON" | jq -r '.kernelSource.repo')
+          BRANCH=$(echo "$JSON" | jq -r '.kernelSource.branch')
+          git clone --recursive --depth=1 -j $(nproc) --branch "$BRANCH" "$REPO" kernel
 
-      - name: "🔧 Download & Setup Toolchain"
-        env:
-          TOOLCHAINS: ${{ toJSON(matrix.repos.toolchains) }}
+      - name: "🔧 Setup ZyCromerZ Clang"
         run: |
-          # 1. Reset PATH (naprawia problem z find/which)
-          export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+          JSON=$(jq 'walk(if type == "string" then gsub(" "; "") else . end)' repos/repos.b2q.json | jq '.[0]')
+          URL=$(echo "$JSON" | jq -r '.toolchains[0].url')
+          DIR="$HOME/zyc-clang"
+          mkdir -p "$DIR"
           
-          # Parsowanie toolchainów
-          if echo "$TOOLCHAINS" | jq -e 'type == "object"' >/dev/null 2>&1; then
-             TOOLCHAINS=$(echo "[$TOOLCHAINS]" | jq '.')
+          wget -q "$URL" -O /tmp/clang.tar.gz
+          tar -xzf /tmp/clang.tar.gz -C "$DIR" --strip-components=1 2>/dev/null || tar -xzf /tmp/clang.tar.gz -C "$DIR"
+          rm -f /tmp/clang.tar.gz
+
+          # Jeśli powstał podfolder, przenieś zawartość wyżej
+          if [ $(find "$DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l) -eq 1 ]; then
+            mv "$DIR"/*/* "$DIR"/ 2>/dev/null || true
           fi
+          
+          echo "$DIR/bin" >> $GITHUB_PATH
 
-          COUNT=$(echo "$TOOLCHAINS" | jq 'length')
-          for (( i=0; i<COUNT; i++ )); do
-            NAME=$(echo "$TOOLCHAINS" | jq -r ".[$i].name")
-            URL=$(echo "$TOOLCHAINS" | jq -r ".[$i].url // empty")
-            
-            echo "📦 Setup toolchain: $NAME"
-            DIR="${{ github.workspace }}/toolchains/$NAME"
-            mkdir -p "$DIR"
-
-            if [[ -n "$URL" && "$URL" != "null" ]]; then
-              echo "⬇️ Downloading from: $URL"
-              FILENAME=$(basename "$URL")
-              wget -q "$URL" -O "/tmp/$FILENAME"
-              
-              # Rozpakowujemy BEZ --strip-components, żeby uniknąć błędów
-              tar -xzf "/tmp/$FILENAME" -C "$DIR"
-              rm -f "/tmp/$FILENAME"
-
-              # Sprawdzamy strukturę katalogów. Jeśli powstał podfolder, przenosimy zawartość wyżej
-              SUBFOLDERS=$(find "$DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)
-              COUNT_SUB=$(echo "$SUBFOLDERS" | wc -l)
-              
-              if [[ $COUNT_SUB -eq 1 && -n "$SUBFOLDERS" ]]; then
-                  echo "📂 Przenoszę zawartość z podfolderu..."
-                  mv "$SUBFOLDERS"/* "$DIR"/ 2>/dev/null || true
-                  mv "$SUBFOLDERS"/.[!.]* "$DIR"/ 2>/dev/null || true
-                  rmdir "$SUBFOLDERS" 2>/dev/null || true
-              fi
-              
-              # Jeśli bin nie istnieje, ale jest sam plik 'clang' (struktura płaska)
-              if [[ ! -d "$DIR/bin" && -f "$DIR/clang" ]]; then
-                  echo "🔧 Tworzę folder bin i przenoszę clang..."
-                  mkdir -p "$DIR/bin"
-                  mv "$DIR/clang" "$DIR/bin/"
-              fi
-            else
-              echo "❌ Error: No URL provided for $NAME"
-              exit 1
-            fi
-
-            # ✅ POPRAWKA: Używamy GITHUB_PATH zamiast GITHUB_ENV
-            # To bezpiecznie dodaje katalog do PATH bez nadpisywania zmiennych systemowych
-            if [[ -d "$DIR/bin" ]]; then
-              echo "$DIR/bin" >> $GITHUB_PATH
-              echo "✅ Added $DIR/bin to PATH safely."
-            else
-              echo "⚠️ Warning: bin directory not found in $DIR"
-              ls -la "$DIR"
-            fi
-          done
-
-      - name: "🔍 Locate Clang Binary"
-        id: locate-clang
+      - name: "🔨 Build Kernel (Proven Flags)"
+        working-directory: kernel
         run: |
-          # Reset PATH
-          export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
-          
-          TOOLCHAIN_DIR="${{ github.workspace }}/toolchains/zyc-clang"
-          echo "🔎 Searching for clang in $TOOLCHAIN_DIR..."
-          
-          # Szukamy pliku wykonywalnego 'clang' lub 'clang-*'
-          # Używamy pełnej ścieżki do find, na wypadek gdyby PATH nadal był dziwny (choć reset powinien pomóc)
-          CLANG_BIN=$(/usr/bin/find "$TOOLCHAIN_DIR" \( -name "clang" -o -name "clang-*" \) -type f -executable 2>/dev/null | head -n 1)
-          
-          if [[ -z "$CLANG_BIN" ]]; then
-             # Fallback: szukamy w bin/
-             CLANG_BIN=$(/usr/bin/find "$TOOLCHAIN_DIR" -path "*/bin/clang" -type f -executable 2>/dev/null | head -n 1)
-          fi
-          
-          if [[ -z "$CLANG_BIN" || ! -x "$CLANG_BIN" ]]; then
-            echo "❌ FATAL: Nie znaleziono pliku binarnego clang!"
-            echo "Struktura katalogów:"
-            ls -R "$TOOLCHAIN_DIR" 2>/dev/null | head -20
-            exit 1
-          fi
-          
-          echo "✅ Found Clang at: $CLANG_BIN"
-          "$CLANG_BIN" --version | head -3
-          # Zapisujemy ścieżkę do środowiska kolejnych kroków
-          echo "CLANG_BIN=$CLANG_BIN" >> $GITHUB_OUTPUT
+          JSON=$(jq 'walk(if type == "string" then gsub(" "; "") else . end)' repos/repos.b2q.json | jq '.[0]')
+          DEFCONFIG=$(echo "$JSON" | jq -r '.kernelSource.defconfig')
+          OUT_DIR="${{ github.workspace }}/out"
 
-      - name: "🔨 Build Kernel (Verbose & Safe)"
-        working-directory: kernel_source
-        run: |
-          # Reset PATH
-          export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
-          
-          CLANG_BIN="${{ steps.locate-clang.outputs.CLANG_BIN }}"
-          
-          if [[ -z "$CLANG_BIN" || ! -x "$CLANG_BIN" ]]; then
-            echo "❌ FATAL: CLANG_BIN is not valid!"
-            exit 1
-          fi
+          echo "✅ Compiler: $(which clang) | $(clang --version | head -1)"
+          echo "📝 Config: $DEFCONFIG"
 
-          echo "🚀 Building with Explicit Clang: $CLANG_BIN"
-          
-          PARAMS='${{ toJSON(matrix.repos.params) }}'
-          DEFCONFIG='${{ matrix.repos.kernelSource.defconfig }}'
-          ARCH=$(echo "$PARAMS" | jq -r '.ARCH // "arm64"')
-
-          # 🔑 KLUCZOWE FLAGI:
-          # CC="$CLANG_BIN"  -> Wymusza nasz toolchain
-          # HOSTCC=clang     -> Systemowy clang dla skryptów hosta (działa na x86_64)
-          # LLVM=1 LLVM_IAS=1 -> Pełna kompilacja przez LLVM
-          # GCC_TOOLCHAIN=   -> Blokuje auto-detect systemowego GCC
-          # WERROR=0         -> Omija HDRTEST strict mode i warningi
-          # V=1              -> Pełny verbose
-          CMD="make -j$(nproc) O=${{ github.workspace }}/out ARCH=${ARCH} CC='$CLANG_BIN' HOSTCC=clang LLVM=1 LLVM_IAS=1 GCC_TOOLCHAIN= WERROR=0 V=1"
-          
-          # Dodaj CROSS_COMPILE itp., ale NIGDY nie nadpisuj CC
-          if [[ $(echo "$PARAMS" | jq 'has("externalCommand")') == "true" ]]; then
-             while read -r param; do
-               KEY=$(echo "$param" | cut -d= -f1)
-               VAL=$(echo "$param" | cut -d= -f2-)
-               [[ "$KEY" == "CC" ]] && continue
-               [[ -n "$VAL" ]] && CMD="$CMD $KEY=$VAL"
-             done < <(jq -r '.externalCommand | to_entries[] | "\(.key)=\(.value)"' <<< "$PARAMS")
-          fi
-
-          echo "📝 Running defconfig..."
-          make mrproper >/dev/null 2>&1 || true
-          eval "$CMD $DEFCONFIG"
-          
-          echo "⚡ Starting full build..."
-          eval "$CMD"
+          # 🔑 CZYSTE FLAGI DLA ZYCROMERZ CLANG:
+          # - Ignorujemy CROSS_COMPILE z JSON (wymusza systemowe GCC)
+          # - LLVM=1 LLVM_IAS=1 = pełna kompilacja przez clang/llvm
+          # - HOSTCC=clang = skrypty pomocnicze też przez clang (szybciej, mniej konfliktów)
+          make -j$(nproc) O="$OUT_DIR" ARCH=arm64 CC=clang HOSTCC=clang LLVM=1 LLVM_IAS=1 "$DEFCONFIG"
+          make -j$(nproc) O="$OUT_DIR" ARCH=arm64 CC=clang HOSTCC=clang LLVM=1 LLVM_IAS=1
 
           echo "✅ Build finished."
-          ls -l "${{ github.workspace }}/out/arch/${ARCH}/boot/Image.gz" 2>/dev/null || echo "⚠️ Image.gz not found"
+          ls -l "$OUT_DIR/arch/arm64/boot/Image.gz" 2>/dev/null || echo "⚠️ Image.gz not found"
