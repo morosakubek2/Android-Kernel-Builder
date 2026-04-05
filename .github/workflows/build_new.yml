@@ -19,7 +19,6 @@ jobs:
         id: generate-matrix
         run: |
           echo "repos<<EOF" >> $GITHUB_OUTPUT
-          # Upewnij się, że plik JSON istnieje
           if [ -f repos/repos.b2q.json ]; then
             jq -s '[.[][]]' repos/repos.b2q.json >> $GITHUB_OUTPUT
           else
@@ -62,7 +61,6 @@ jobs:
           TOOLCHAINS: ${{ toJSON(matrix.repos.toolchains) }}
         run: |
           echo "Parsing toolchains..."
-          # Sprawdź czy to tablica czy obiekt
           if echo "$TOOLCHAINS" | jq -e 'type == "object"' >/dev/null 2>&1; then
              TOOLCHAINS=$(echo "[$TOOLCHAINS]" | jq '.')
           fi
@@ -82,19 +80,14 @@ jobs:
               echo "Downloading from URL: $URL"
               FILENAME=$(basename "$URL")
               wget -q "$URL" -O "/tmp/$FILENAME"
-              
-              # Rozpakuj, usuwając główny folder jeśli istnieje (strip-components=1)
-              # Jeśli to nie zadziała, spróbuj bez strip-components
               tar -xzf "/tmp/$FILENAME" -C "$DIR" --strip-components=1 2>/dev/null || \
               tar -xzf "/tmp/$FILENAME" -C "$DIR"
-              
               rm -f "/tmp/$FILENAME"
             else
               echo "Error: No URL provided for $NAME"
               exit 1
             fi
 
-            # Dodaj bin do PATH (dla pewności, choć użyjemy ścieżki bezwzględnej)
             if [[ -d "$DIR/bin" ]]; then
               echo "PATH=$DIR/bin:\$PATH" >> $GITHUB_ENV
               echo "✅ Added $DIR/bin to PATH"
@@ -105,66 +98,61 @@ jobs:
 
       - name: "🔍 Verify Toolchain"
         run: |
-          echo "--- Checking Compiler ---"
-          which clang || echo "Clang not in PATH"
-          # Sprawdź czy nasz custom clang istnieje
-          if [ -f "${{ github.workspace }}/toolchains/zyc-clang/bin/clang" ]; then
-             echo "✅ Custom Clang found!"
-             "${{ github.workspace }}/toolchains/zyc-clang/bin/clang" --version | head -3
+          echo "=== Checking Custom Clang ==="
+          CLANG_PATH="${{ github.workspace }}/toolchains/zyc-clang/bin/clang"
+          if [[ -x "$CLANG_PATH" ]]; then
+            echo "✅ Found: $CLANG_PATH"
+            "$CLANG_PATH" --version | head -3
           else
-             echo "❌ Custom Clang NOT found at expected path!"
-          fi
-
-      - name: "🔨 Build Kernel"
-        working-directory: kernel_source
-        run: |
-          echo "Starting build with custom toolchain..."
-          
-          # 1. Ustawiamy JAWNĄ ścieżkę do clang
-          CLANG_BIN="${{ github.workspace }}/toolchains/zyc-clang/bin/clang"
-          
-          if [ ! -f "$CLANG_BIN" ]; then
-            echo "❌ Error: Custom clang not found at $CLANG_BIN"
+            echo "❌ NOT FOUND at expected path!"
             exit 1
           fi
-          
-          echo "👉 Using explicit Clang path: $CLANG_BIN"
+
+      - name: "🔨 Build Kernel (Verbose & Compiler Check)"
+        working-directory: kernel_source
+        env:
+          PARAMS: ${{ toJSON(matrix.repos.params) }}
+          DEFCONFIG: ${{ matrix.repos.kernelSource.defconfig }}
+        run: |
+          echo "🔍 === COMPILER PATH VERIFICATION ==="
+          CLANG_BIN="${{ github.workspace }}/toolchains/zyc-clang/bin/clang"
+
+          if [[ ! -x "$CLANG_BIN" ]]; then
+            echo "❌ FATAL: Custom clang not found at $CLANG_BIN"
+            exit 1
+          fi
+
+          echo "✅ Selected Clang: $CLANG_BIN"
           "$CLANG_BIN" --version | head -3
 
-          # 2. Pobieramy parametry
-          PARAMS='${{ toJSON(matrix.repos.params) }}'
-          DEFCONFIG='${{ matrix.repos.kernelSource.defconfig }}'
-          
-          ARCH=$(echo "$PARAMS" | jq -r '.ARCH // "arm64"')
-          
-          # 3. Budujemy komendę make
-          # CC="$CLANG_BIN" -> Wymusza użycie pobranego clang
-          # WERROR=0 -> Ignoruje warningi w nagłówkach (naprawia błąd // comments)
-          # GCC_TOOLCHAIN= -> Wyłącza systemowe GCC
-          CMD="make -j$(nproc) O=${{ github.workspace }}/out ARCH=${ARCH} CC=\"$CLANG_BIN\" HOSTCC=clang LLVM=1 LLVM_IAS=1 GCC_TOOLCHAIN= WERROR=0"
-          
-          # Dodaj CROSS_COMPILE itp. z JSON
+          # Buduj komendę make z jawnym CC i trybem verbose (V=1)
+          CMD="make -j$(nproc) O=${{ github.workspace }}/out ARCH=arm64 CC=\"$CLANG_BIN\" HOSTCC=clang LLVM=1 LLVM_IAS=1 GCC_TOOLCHAIN= WERROR=0 V=1"
+
+          # Dodaj parametry z JSON, ale NIE nadpisuj CC
           if [[ $(echo "$PARAMS" | jq 'has("externalCommand")') == "true" ]]; then
              while read -r param; do
                KEY=$(echo "$param" | cut -d= -f1)
                VAL=$(echo "$param" | cut -d= -f2-)
-               # Ignoruj puste wartości
-               if [ -n "$VAL" ]; then
+               if [[ "$KEY" != "CC" && -n "$VAL" ]]; then
                  CMD="$CMD $KEY=$VAL"
                fi
              done < <(jq -r '.externalCommand | to_entries[] | "\(.key)=\(.value)"' <<< "$PARAMS")
           fi
 
-          echo "🚀 Running: $CMD $DEFCONFIG"
-          
-          # Czyścimy
+          echo "🚀 Final Make Command:"
+          echo "$CMD ${DEFCONFIG}"
+          echo "======================="
+
           make mrproper >/dev/null 2>&1 || true
-          
-          # 4. Defconfig
-          eval "$CMD $DEFCONFIG"
-          
-          # 5. Budowanie
-          eval "$CMD"
-          
+
+          echo "📝 Running defconfig..."
+          eval "$CMD ${DEFCONFIG}"
+
+          echo "⚡ Starting full build (VERBOSE MODE)..."
+          eval "$CMD" 2>&1 | tee /tmp/build_output.log
+
           echo "✅ Build finished."
-          ls -l "${{ github.workspace }}/out/arch/${ARCH}/boot/Image.gz" 2>/dev/null || echo "⚠️ Image.gz not found"
+          echo "🔎 Checking which clang was actually invoked:"
+          grep -m 5 "clang " /tmp/build_output.log | sed 's/^/  /' || echo "  (No clang invocations captured)"
+          
+          ls -l "${{ github.workspace }}/out/arch/arm64/boot/Image.gz" 2>/dev/null || echo "⚠️ Image.gz not found"
