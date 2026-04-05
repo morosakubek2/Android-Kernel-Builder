@@ -107,16 +107,27 @@ jobs:
         working-directory: kernel_source
         env:
           PARAMS: ${{ toJSON(matrix.repos.params) }}
+          DEFCONFIG: ${{ matrix.repos.kernelSource.defconfig }}
         run: |
-          echo "Starting build with custom toolchain..."
-          
-          # Pobierz parametry
+          echo "=== Resolving Custom Clang Path ==="
+          # Bezpośrednia ścieżka do pobranego clang
+          CLANG_BIN="${{ github.workspace }}/toolchains/zyc-clang/bin/clang"
+          if [[ ! -x "$CLANG_BIN" ]]; then
+            echo "❌ Error: Custom clang not found at $CLANG_BIN"
+            exit 1
+          fi
+          echo "✅ Using Clang: $CLANG_BIN"
+          "$CLANG_BIN" --version | head -3
+
           ARCH=$(echo "$PARAMS" | jq -r '.ARCH // "arm64"')
-          CC=$(echo "$PARAMS" | jq -r '.CC // "clang"')
-          
-          # 🔑 KLUCZOWE: GCC_TOOLCHAIN= wyłącza systemowy GCC, WERROR=0 omija błędy HDRTEST
-          CMD="make -j$(nproc) O=${{ github.workspace }}/out ARCH=${ARCH} CC=${CC} LLVM=1 LLVM_IAS=1 GCC_TOOLCHAIN= WERROR=0"
-          
+
+          # 🔑 KLUCZOWE:
+          # CC=$CLANG_BIN          -> wymusza użycie custom clang dla kernela
+          # HOSTCC=clang           -> systemowy clang dla skryptów pomocniczych (scripts/)
+          # GCC_TOOLCHAIN=         -> blokuje --gcc-toolchain=/usr
+          # WERROR=0               -> omija HDRTEST strict mode
+          CMD="make -j$(nproc) O=${{ github.workspace }}/out ARCH=${ARCH} CC=$CLANG_BIN HOSTCC=clang LLVM=1 LLVM_IAS=1 GCC_TOOLCHAIN= WERROR=0"
+
           if [[ $(echo "$PARAMS" | jq 'has("externalCommand")') == "true" ]]; then
              while read -r param; do
                KEY=$(echo "$param" | cut -d= -f1)
@@ -125,14 +136,14 @@ jobs:
              done < <(jq -r '.externalCommand | to_entries[] | "\(.key)=\(.value)"' <<< "$PARAMS")
           fi
 
-          echo "Running: $CMD ${DEFCONFIG}"
+          echo "🚀 Starting build..."
           make mrproper >/dev/null 2>&1 || true
-          
+
           # 1. Defconfig
           eval "$CMD ${DEFCONFIG}"
-          
-          # 2. Budowanie
+
+          # 2. Pełna kompilacja
           eval "$CMD"
-          
-          echo "Build finished."
-          ls -l "${{ github.workspace }}/out/arch/${ARCH}/boot/Image.gz" 2>/dev/null || echo "Image.gz not found"
+
+          echo "✅ Build finished."
+          ls -l "${{ github.workspace }}/out/arch/${ARCH}/boot/Image.gz" 2>/dev/null || echo "⚠️ Image.gz not found"
