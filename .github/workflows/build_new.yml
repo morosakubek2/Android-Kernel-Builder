@@ -114,8 +114,11 @@ jobs:
           ARCH=$(echo "$PARAMS" | jq -r '.ARCH // "arm64"')
           CC=$(echo "$PARAMS" | jq -r '.CC // "clang"')
           
-          # 🔑 DODANO: WERROR=0 KCFLAGS="-Wno-error=comment"
-          CMD="make -j$(nproc) O=${{ github.workspace }}/out ARCH=${ARCH} CC=${CC} LLVM=1 LLVM_IAS=1 WERROR=0 KCFLAGS=\"-Wno-error=comment\""
+          # 🔑 KLUCZOWE: 
+          # GCC_TOOLCHAIN=       -> blokuje --gcc-toolchain=/usr
+          # WERROR=0             -> wyłącza HDRTEST strict mode
+          # KCFLAGS="-Wno-error" -> dodatkowa ochrona przed warningami -> error
+          CMD="make -j$(nproc) O=${{ github.workspace }}/out ARCH=${ARCH} CC=${CC} LLVM=1 LLVM_IAS=1 GCC_TOOLCHAIN= WERROR=0 KCFLAGS=\"-Wno-error\""
           
           if [[ $(echo "$PARAMS" | jq 'has("externalCommand")') == "true" ]]; then
              while read -r param; do
@@ -135,4 +138,3 @@ jobs:
           eval "$CMD"
           
           echo "Build finished."
-          ls -l "${{ github.workspace }}/out/arch/${ARCH}/boot/Image.gz" 2>/dev/null || echo "Image.gz not found (might be Image or Image.gz-dtb)"
