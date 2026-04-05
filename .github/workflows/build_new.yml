@@ -18,6 +18,9 @@ jobs:
       - name: "😆 Generate Matrix"
         id: generate-matrix
         run: |
+          # Reset PATH dla bezpieczeństwa
+          export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+          
           echo "repos<<EOF" >> $GITHUB_OUTPUT
           if [ -f repos/repos.b2q.json ]; then
             jq -s '[.[][]]' repos/repos.b2q.json >> $GITHUB_OUTPUT
@@ -49,6 +52,7 @@ jobs:
 
       - name: "📦 Install Dependencies"
         run: |
+          # Reset PATH
           export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
           sudo apt-get update
           sudo apt-get install -y bc bison flex libssl-dev lld llvm curl git wget zip unzip tar jq gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi build-essential libelf-dev dwarves
@@ -57,10 +61,11 @@ jobs:
         run: |
           git clone --recursive --depth=1 -j $(nproc) --branch "${KERNEL_BRANCH}" "${KERNEL_REPO}" kernel_source
 
-      - name: "🔧 Download & Setup Toolchain"
+      - name: "🔧 Download & Setup Toolchain (Robust)"
         env:
           TOOLCHAINS: ${{ toJSON(matrix.repos.toolchains) }}
         run: |
+          # 1. Reset PATH (Naprawia błąd 'command not found')
           export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
           
           if echo "$TOOLCHAINS" | jq -e 'type == "object"' >/dev/null 2>&1; then
@@ -71,8 +76,9 @@ jobs:
           echo "Found $COUNT toolchain(s)"
 
           for (( i=0; i<COUNT; i++ )); do
-            NAME=$(echo "$TOOLCHAINS" | jq -r ".[$i].name")
-            URL=$(echo "$TOOLCHAINS" | jq -r ".[$i].url // empty")
+            # Trimujemy spacje z JSONa dla bezpieczeństwa
+            NAME=$(echo "$TOOLCHAINS" | jq -r ".[$i].name" | tr -d '[:space:]')
+            URL=$(echo "$TOOLCHAINS" | jq -r ".[$i].url // empty" | tr -d '[:space:]')
             
             echo "📦 Setup toolchain: $NAME"
             DIR="${{ github.workspace }}/toolchains/$NAME"
@@ -80,17 +86,32 @@ jobs:
 
             if [[ -n "$URL" && "$URL" != "null" ]]; then
               echo "⬇️ Downloading from: $URL"
-              FILENAME=$(basename "$URL")
+              FILENAME="toolchain.tar.gz"
               wget -q "$URL" -O "/tmp/$FILENAME"
+              
+              # 2. Wypakowujemy BEZ --strip-components (bezpieczniejsze)
               tar -xzf "/tmp/$FILENAME" -C "$DIR"
               rm -f "/tmp/$FILENAME"
 
+              # 3. Naprawiamy strukturę katalogów
+              # Jeśli w $DIR jest tylko JEDEN podkatalog (np. Clang-14/), przenosimy jego zawartość wyżej
               SUBFOLDERS=$(find "$DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)
-              if [ $(echo "$SUBFOLDERS" | wc -l) -eq 1 ] && [ -n "$SUBFOLDERS" ]; then
+              COUNT_SUB=$(echo "$SUBFOLDERS" | wc -l)
+              
+              if [[ $COUNT_SUB -eq 1 && -n "$SUBFOLDERS" ]]; then
+                  echo "📂 Wykryto folder główny. Przenoszę zawartość do korzenia..."
                   mv "$SUBFOLDERS"/* "$DIR"/ 2>/dev/null || true
                   mv "$SUBFOLDERS"/.[!.]* "$DIR"/ 2>/dev/null || true
                   rmdir "$SUBFOLDERS" 2>/dev/null || true
               fi
+              
+              # Jeśli bin nie istnieje, ale jest sam plik 'clang' (struktura płaska)
+              if [[ ! -d "$DIR/bin" && -f "$DIR/clang" ]]; then
+                  echo "🔧 Tworzę folder bin i przenoszę clang..."
+                  mkdir -p "$DIR/bin"
+                  mv "$DIR/clang" "$DIR/bin/"
+              fi
+              
             else
               echo "❌ Error: No URL provided for $NAME"
               exit 1
@@ -98,58 +119,68 @@ jobs:
 
             if [[ -d "$DIR/bin" ]]; then
               echo "$DIR/bin" >> $GITHUB_PATH
-              echo "✅ Added $DIR/bin to PATH"
+              echo "✅ Toolchain ready at: $DIR/bin"
+            else
+              echo "⚠️ Warning: bin directory not found in $DIR"
+              ls -la "$DIR"
             fi
           done
 
       - name: "🔍 Locate Clang Binary"
         id: locate-clang
         run: |
+          # Reset PATH
           export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+          
           TOOLCHAIN_DIR="${{ github.workspace }}/toolchains/zyc-clang"
+          echo "🔎 Searching for clang in $TOOLCHAIN_DIR..."
           
-          echo "🔎 Searching for clang binary..."
-          CLANG_BIN="$TOOLCHAIN_DIR/bin/clang"
+          # Szukamy pliku wykonywalnego o nazwie 'clang' lub 'clang-*'
+          CLANG_BIN=$(find "$TOOLCHAIN_DIR" -name "clang" -o -name "clang-[0-9]*" -type f -executable 2>/dev/null | head -n 1)
           
-          if [[ ! -x "$CLANG_BIN" ]]; then
-            CLANG_BIN=$(find "$TOOLCHAIN_DIR" -name "clang" -executable 2>/dev/null | head -n 1)
-          fi
-          if [[ ! -x "$CLANG_BIN" ]]; then
-            CLANG_BIN=$(find "$TOOLCHAIN_DIR" -name "clang-[0-9]*" -executable 2>/dev/null | head -n 1)
+          # Fallback: szukamy w bin/
+          if [[ -z "$CLANG_BIN" ]]; then
+             CLANG_BIN=$(find "$TOOLCHAIN_DIR" -path "*/bin/clang" -type f -executable 2>/dev/null | head -n 1)
           fi
           
           if [[ -z "$CLANG_BIN" || ! -x "$CLANG_BIN" ]]; then
-            echo "❌ FATAL: clang binary not found!"
-            ls -la "$TOOLCHAIN_DIR/bin/" 2>/dev/null || echo "(bin dir missing)"
+            echo "❌ FATAL: Nie znaleziono pliku binarnego clang!"
+            echo "Struktura katalogów:"
+            ls -R "$TOOLCHAIN_DIR" 2>/dev/null | head -20
             exit 1
           fi
           
           echo "✅ Found Clang at: $CLANG_BIN"
-          "$CLANG_BIN" --version | head -n 3
+          "$CLANG_BIN" --version | head -3
           echo "CLANG_BIN=$CLANG_BIN" >> $GITHUB_OUTPUT
 
       - name: "🔨 Build Kernel (Verbose & Safe)"
         working-directory: kernel_source
+        env:
+          PARAMS: ${{ toJSON(matrix.repos.params) }}
+          CLANG_BIN: ${{ steps.locate-clang.outputs.CLANG_BIN }}
         run: |
+          # Reset PATH
           export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
           
-          if [[ -z "$CLANG_BIN" ]]; then
-            CLANG_BIN="${{ steps.locate-clang.outputs.CLANG_BIN }}"
-          fi
-
           if [[ -z "$CLANG_BIN" || ! -x "$CLANG_BIN" ]]; then
-            echo "❌ FATAL: CLANG_BIN is not set or executable!"
+            echo "❌ FATAL: CLANG_BIN is not valid!"
             exit 1
           fi
 
           echo "🚀 Building with Explicit Clang: $CLANG_BIN"
           
-          PARAMS='${{ toJSON(matrix.repos.params) }}'
-          DEFCONFIG='${{ matrix.repos.kernelSource.defconfig }}'
           ARCH=$(echo "$PARAMS" | jq -r '.ARCH // "arm64"')
+          DEFCONFIG='${{ matrix.repos.kernelSource.defconfig }}'
 
-          CMD="make -j$(nproc) O=${{ github.workspace }}/out ARCH=${ARCH} CC='$CLANG_BIN' HOSTCC=clang LLVM=1 LLVM_IAS=1 GCC_TOOLCHAIN= WERROR=0 V=1"
+          # 🔑 KLUCZOWE FLAGI:
+          # CC="$CLANG_BIN" -> Wymusza nasz toolchain
+          # WERROR=0      -> Wyłącza traktowanie warningów jako błędów (naprawia HDRTEST)
+          # GCC_TOOLCHAIN=-> Blokuje auto-wykrywanie systemowego GCC
+          # V=1           -> Pełny verbose
+          CMD="make -j$(nproc) O=${{ github.workspace }}/out ARCH=${ARCH} CC=\"$CLANG_BIN\" HOSTCC=clang LLVM=1 LLVM_IAS=1 GCC_TOOLCHAIN= WERROR=0 V=1"
           
+          # Dodaj CROSS_COMPILE itp. z JSON (bez nadpisywania CC)
           if [[ $(echo "$PARAMS" | jq 'has("externalCommand")') == "true" ]]; then
              while read -r param; do
                KEY=$(echo "$param" | cut -d= -f1)
@@ -159,16 +190,11 @@ jobs:
              done < <(jq -r '.externalCommand | to_entries[] | "\(.key)=\(.value)"' <<< "$PARAMS")
           fi
 
-          echo "📝 Running Defconfig..."
+          echo "📝 Command: $CMD $DEFCONFIG"
+          
           make mrproper >/dev/null 2>&1 || true
           eval "$CMD $DEFCONFIG"
-
-          sed -i 's/CONFIG_HEADERS_CHECK=y/# CONFIG_HEADERS_CHECK is not set/' .config 2>/dev/null || true
-          sed -i 's/CONFIG_WERROR=y/# CONFIG_WERROR is not set/' .config 2>/dev/null || true
-          make olddefconfig > /dev/null 2>&1 || true
-
-          echo "⚡ Starting Full Build..."
           eval "$CMD"
 
           echo "✅ Build finished."
-          ls -l "${{ github.workspace }}/out/arch/${ARCH}/boot/Image.gz" 2>/dev/null || echo "⚠️ Image.gz not found (check out/arch/${ARCH}/boot/)"
+          ls -l "${{ github.workspace }}/out/arch/${ARCH}/boot/Image.gz" 2>/dev/null || echo "⚠️ Image.gz not found"
