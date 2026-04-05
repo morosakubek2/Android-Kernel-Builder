@@ -1,7 +1,6 @@
-name: "Build kernels"
+name: "Build Kernel"
 env:
   OUT_DIR: "${{ github.workspace }}/out"
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 on:
   workflow_dispatch:
@@ -12,7 +11,6 @@ jobs:
     runs-on: ubuntu-22.04
     outputs:
       repos: ${{ steps.generate-matrix.outputs.repos }}
-      builddate: ${{ steps.generate-builddate.outputs.builddate }}
     steps:
       - name: "😄 Checkout"
         uses: actions/checkout@v3
@@ -24,158 +22,119 @@ jobs:
           jq -s '[.[][]]' repos/repos*.json >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
-      - name: "⏰ Set builddate"
-        id: generate-builddate
-        run: echo "builddate=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
-
   Build-Kernel:
-    name: "🐎 Build kernel"
+    name: "🐎 Build Kernel"
     runs-on: ubuntu-22.04
     needs: Set-repos
     strategy:
-      max-parallel: 8
+      max-parallel: 4
       fail-fast: false
       matrix:
         repos: ${{ fromJSON(needs.Set-repos.outputs.repos) }}
     env:
-      WORKSPACE: ${{ github.workspace }}
-      builddate: "${{ needs.Set-repos.outputs.builddate }}"
       KERNEL_NAME: ${{ matrix.repos.kernelSource.name }}
       KERNEL_REPO: ${{ matrix.repos.kernelSource.repo }}
       KERNEL_BRANCH: ${{ matrix.repos.kernelSource.branch }}
-      KERNEL_DEVICE: ${{ matrix.repos.kernelSource.device }}
-      DEFCONFIG_NAME: ${{ matrix.repos.kernelSource.defconfig }}
-      withKernelSU: ${{ matrix.repos.withKernelSU }}
-      withSUSFS: ${{ matrix.repos.withSUSFS }}
-      withLXC: ${{ matrix.repos.withLXC }}
-      useAnykernel: ${{ matrix.repos.AnyKernel3.use }}
-      release: ${{ matrix.repos.AnyKernel3.release }}
+      DEFCONFIG: ${{ matrix.repos.kernelSource.defconfig }}
 
     steps:
       - name: "😄 Checkout"
         uses: actions/checkout@v3
         with:
-          path: "repo"
+          path: "builder"
 
-      - name: "⭐ Install prerequisites"
+      - name: "📦 Install Dependencies"
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential bc bison flex libssl-dev libfl-dev lld llvm curl git wget zip unzip tar rsync jq gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+          sudo apt-get install -y bc bison flex libssl-dev lld llvm curl git wget zip unzip tar jq gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi build-essential libelf-dev dwarves
 
-      - name: "⏰ Setup Anykernel3"
+      - name: "🌟 Clone Kernel Source"
+        run: |
+          git clone --recursive --depth=1 -j $(nproc) --branch "${KERNEL_BRANCH}" "${KERNEL_REPO}" kernel_source
+
+      - name: "🔧 Download & Setup Toolchain (zyc-clang)"
         env:
-          params: "${{ toJSON(matrix.repos.AnyKernel3) }}"
+          TOOLCHAINS: ${{ toJSON(matrix.repos.toolchains) }}
         run: |
-          ANYKERNEL_REPO=$(echo "${params}" | jq -r ".repo")
-          ANYKERNEL_BRANCH=$(echo "${params}" | jq -r ".branch")
-          git clone --recursive --depth=1 -j $(nproc) --branch "${ANYKERNEL_BRANCH}" "${ANYKERNEL_REPO}" AnyKernel3
+          echo "Parsing toolchains configuration..."
+          # Sprawdź czy to tablica czy obiekt
+          if echo "$TOOLCHAINS" | jq -e 'type == "object"' >/dev/null 2>&1; then
+             TOOLCHAINS=$(echo "[$TOOLCHAINS]" | jq '.')
+          fi
 
-      - name: "🌟 Clone kernel source"
-        id: clone-kernel
-        run: |
-          git clone --recursive --depth=1 -j $(nproc) --branch "${KERNEL_BRANCH}" "${KERNEL_REPO}" "${KERNEL_NAME}"
-          KERNEL_GIT_REF=$(git -C "${KERNEL_NAME}" rev-parse --short HEAD)
-          echo "KERNEL_GIT_REF=${KERNEL_GIT_REF}" >> $GITHUB_OUTPUT
+          COUNT=$(echo "$TOOLCHAINS" | jq 'length')
+          echo "Found $COUNT toolchain(s)"
 
-      - name: "🧹 Full Clean"
-        working-directory: ${{ env.KERNEL_NAME }}
-        run: |
-          echo "Performing full clean before build..."
-          make mrproper 2>/dev/null || true
-          rm -rf "${{ env.OUT_DIR }}" 2>/dev/null || true
-          echo "Clean completed."
+          for (( i=0; i<COUNT; i++ )); do
+            NAME=$(echo "$TOOLCHAINS" | jq -r ".[$i].name")
+            URL=$(echo "$TOOLCHAINS" | jq -r ".[$i].url // empty")
+            
+            echo "Setup toolchain: $NAME"
+            DIR="${{ github.workspace }}/toolchains/$NAME"
+            mkdir -p "$DIR"
 
-      - name: "💫 Setup Clang Toolchain"
-        env:
-          toolchains: "${{ toJSON(matrix.repos.toolchains) }}"
-        run: |
-          TOOLCHAIN_COUNT=$(echo "${toolchains}" | jq 'length')
-          for ((i=0; i<TOOLCHAIN_COUNT; i++)); do
-            name=$(echo "${toolchains}" | jq -r ".[$i].name")
-            url=$(echo "${toolchains}" | jq -r ".[$i].url // empty")
-            repo=$(echo "${toolchains}" | jq -r ".[$i].repo // empty")
-            branch=$(echo "${toolchains}" | jq -r ".[$i].branch // empty")
-
-            if [[ -n "$url" ]]; then
-              echo "Downloading $name from URL..."
-              wget -q "$url" -O "toolchain.tar.gz"
-              mkdir -p "${WORKSPACE}/${name}"
-              tar -xzf toolchain.tar.gz -C "${WORKSPACE}/${name}" --strip-components=1 2>/dev/null || \
-              tar -xzf toolchain.tar.gz -C "${WORKSPACE}/${name}"
-              rm -f toolchain.tar.gz
-            elif [[ -n "$repo" && -n "$branch" ]]; then
-              echo "Cloning $name from Git..."
-              git clone --depth=1 --branch "$branch" "$repo" "${WORKSPACE}/${name}"
+            if [[ -n "$URL" && "$URL" != "null" ]]; then
+              echo "Downloading from URL: $URL"
+              FILENAME=$(basename "$URL")
+              wget -q "$URL" -O "/tmp/$FILENAME"
+              # Rozpakuj, usuwając główny folder jeśli istnieje (strip-components=1)
+              tar -xzf "/tmp/$FILENAME" -C "$DIR" --strip-components=1 2>/dev/null || \
+              tar -xzf "/tmp/$FILENAME" -C "$DIR"
+              rm -f "/tmp/$FILENAME"
             else
-              echo "Error: No URL or repo/branch defined for $name"
+              echo "Error: No URL provided for $NAME"
               exit 1
             fi
 
-            echo "Adding $name/bin to PATH..."
-            echo "${WORKSPACE}/${name}/bin" >> $GITHUB_PATH
+            # Dodaj bin do PATH
+            if [[ -d "$DIR/bin" ]]; then
+              echo "$DIR/bin" >> $GITHUB_PATH
+              echo "✅ Added $DIR/bin to PATH"
+            else
+              echo "⚠️ Warning: bin directory not found in $DIR"
+            fi
           done
 
-      - name: "🔬 Toolchain Diagnostics"
+      - name: "🔍 Verify Toolchain"
         run: |
-          echo "Clang version:"
+          echo "--- Checking Compiler ---"
           which clang
-          clang --version | head -5
-          echo "ld.lld version:"
-          ld.lld --version
+          clang --version | head -n 3
+          echo "--- Checking PATH ---"
+          echo $PATH
 
-      - name: "😎 Set args"
-        id: generate-args
+      - name: "🔨 Build Kernel"
+        working-directory: kernel_source
         env:
-          params: "${{ toJSON(matrix.repos.params) }}"
+          # Ważne: GCC_TOOLCHAIN="" zapobiega używaniu systemowego GCC
+          PARAMS: ${{ toJSON(matrix.repos.params) }}
         run: |
-          ARCH=$(echo "${params}" | jq -r ".ARCH")
-          CC=$(echo "${params}" | jq -r ".CC")
-
-          args="-j$(nproc --all) O=${{ env.OUT_DIR }} ARCH=${ARCH} CC=${CC}"
-          while read -r externalCommand; do
-            key=$(echo "${externalCommand}" | cut -d= -f1)
-            value=$(echo "${externalCommand}" | cut -d= -f2-)
-            args="${args} ${key}=${value}"
-          done < <(jq -r '.externalCommand | to_entries[] | "\(.key)=\(.value)"' <<< "${params}")
-
-          echo "args=${args}" >> $GITHUB_OUTPUT
-          echo "ARCH=${ARCH}" >> $GITHUB_OUTPUT
-
-      - name: "🎶 Build kernel"
-        working-directory: ${{ env.KERNEL_NAME }}
-        env:
-          args: ${{ steps.generate-args.outputs.args }}
-        run: |
-          echo "→ Running defconfig..."
-          make ${{ env.args }} ${{ env.DEFCONFIG_NAME }} V=1 2>&1 | tee defconfig.log
-
-          echo "→ Starting full build..."
-          make ${{ env.args }} V=1 2>&1 | tee build.log
-
-          echo "=== CHECKING FOR ERRORS ==="
-          if grep -q "error:" build.log; then
-            grep -n "error:\|fatal\|undefined" build.log | head -30
-            echo "Build failed. Check logs above."
-            exit 1
-          else
-            echo "Build completed successfully!"
+          echo "Starting build with custom toolchain..."
+          
+          # Pobierz parametry
+          ARCH=$(echo "$PARAMS" | jq -r ".ARCH // 'arm64'")
+          CC=$(echo "$PARAMS" | jq -r ".CC // 'clang'")
+          
+          # Buduj komendę make
+          CMD="make -j$(nproc) O=${{ github.workspace }}/out ARCH=${ARCH} CC=${CC} LLVM=1 LLVM_IAS=1"
+          
+          # Dodaj CROSS_COMPILE itp.
+          if [[ $(echo "$PARAMS" | jq 'has("externalCommand")') == "true" ]]; then
+             while read -r param; do
+               KEY=$(echo "$param" | cut -d= -f1)
+               VAL=$(echo "$param" | cut -d= -f2-)
+               CMD="$CMD $KEY=$VAL"
+             done < <(jq -r '.externalCommand | to_entries[] | "\(.key)=\(.value)"' <<< "$PARAMS")
           fi
 
-      - name: "Define output artifact names"
-        id: define-output-names
-        env:
-          run_number: ${{ github.run_number }}
-          KERNEL_GIT_REF: ${{ steps.clone-kernel.outputs.KERNEL_GIT_REF }}
-        run: |
-          echo "release_name=[${{ env.builddate }}.${run_number}] ${KERNEL_DEVICE}" >> $GITHUB_OUTPUT
-          echo "image_gz=Image.gz-${KERNEL_DEVICE}-${KERNEL_NAME}-${{ env.builddate }}" >> $GITHUB_OUTPUT
-          echo "dtbo_img=dtbo.img-${KERNEL_DEVICE}-${KERNEL_NAME}-${{ env.builddate }}" >> $GITHUB_OUTPUT
-          echo "release_zip=${KERNEL_DEVICE}-${KERNEL_NAME}.zip" >> $GITHUB_OUTPUT
-
-      - name: "💙 Upload Image.gz"
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ steps.define-output-names.outputs.image_gz }}
-          path: ${{ env.OUT_DIR }}/arch/${{ steps.generate-args.outputs.ARCH }}/boot/Image.gz
-          if-no-files-found: ignore
-          retention-days: 90
+          echo "Running: $CMD ${DEFCONFIG}"
+          make mrproper >/dev/null 2>&1 || true
+          
+          # 1. Defconfig
+          eval "$CMD ${DEFCONFIG}"
+          
+          # 2. Budowanie
+          eval "$CMD"
+          
+          echo "Build finished."
+          ls -l "${{ github.workspace }}/out/arch/${ARCH}/boot/Image.gz" 2>/dev/null || echo "Image.gz not found (might be Image or Image.gz-dtb)"
