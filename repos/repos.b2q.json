@@ -12,19 +12,25 @@
     "withLXC": false,
     "toolchains": [
       {
-        "name": "zyc-clang",
-        "url": "https://github.com/ZyCromerZ/Clang/releases/download/14.0.6-20250704-release/Clang-14.0.6-20250704.tar.gz",
+        "name": "clang",
+        "repo": "https://github.com/rsuntk/toolchains.git",
+        "branch": "clang-11",
+        "binPath": ["bin"]
+      },
+      {
+        "name": "google",
+        "repo": "https://github.com/rsuntk/toolchains.git",
+        "branch": "androidcc-4.9",
         "binPath": ["bin"]
       }
     ],
     "params": {
       "ARCH": "arm64",
-      "CC": "clang",
+      "CC": "clang/bin/clang",
       "externalCommand": {
-        "CROSS_COMPILE": "aarch64-linux-gnu-",
-        "CROSS_COMPILE_ARM32": "arm-linux-gnueabi-",
+        "CROSS_COMPILE": "google/bin/arm-linux-androideabi-",
+        "CROSS_COMPILE_ARM32": "google/bin/arm-linux-androideabi-",
         "CLANG_TRIPLE": "aarch64-linux-gnu-",
-        "AS": "clang",
         "LD": "ld.lld",
         "AR": "llvm-ar",
         "NM": "llvm-nm",
@@ -32,7 +38,6 @@
         "OBJDUMP": "llvm-objdump",
         "READELF": "llvm-readelf",
         "STRIP": "llvm-strip",
-        "LLVM": "1",
         "LLVM_IAS": "1",
         "GCC_TOOLCHAIN": ""
       }

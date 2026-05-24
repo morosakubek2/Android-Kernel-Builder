@@ -180,6 +180,11 @@ jobs:
             echo "CONFIG_ZEROMOUNT=y" >> "$DEFCONFIG_PATH"
           fi
 
+          # Dodaj CONFIG_SECTION_MISMATCH_WARN_ONLY=y do defconfig
+          if [ -f "$DEFCONFIG_PATH" ] && ! grep -q "CONFIG_SECTION_MISMATCH_WARN_ONLY" "$DEFCONFIG_PATH"; then
+            echo "CONFIG_SECTION_MISMATCH_WARN_ONLY=y" >> "$DEFCONFIG_PATH"
+          fi
+
           echo "=== ZeroMount 5.4 applied ==="
 
       - name: "😎 Set build args"
